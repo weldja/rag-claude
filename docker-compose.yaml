@@ -36,6 +36,8 @@ services:
       - ./config.yaml:/app/config.yaml:ro
     env_file:
       - .env
+    ports:
+      - "8501:8501"
     environment:
       - DB_HOST=db
       - DB_PORT=5432
