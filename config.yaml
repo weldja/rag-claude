@@ -1,0 +1,26 @@
+# ─────────────────────────────────────────────
+# RAG Assistant — Client Configuration
+# Edit this file to brand for each deployment.
+# No code changes needed.
+# ─────────────────────────────────────────────
+
+branding:
+  company_name: "My AI  JW Company"
+  tagline: "Ask questions across your business documents"
+  accent_colour: "#185FA5"        # any hex colour
+  assistant_name: "Document Assistant"
+
+suggested_questions:
+  - "What does this document cover?"
+  - "Summarise the key points"
+  - "What are the main steps?"
+
+ui:
+  show_response_time: true        # show ⏱ Xs on each answer
+  show_sources: true              # show source chunks under answers
+  show_copy_button: true          # copy answer to clipboard
+  max_suggested_questions: 5      # max shown in sidebar
+  welcome_message: |
+    Welcome! Ask questions about your loaded documents.
+    Use the suggested questions in the sidebar to get started,
+    or type your own question below.
