@@ -2,17 +2,14 @@
 streamlit>=1.35.0
 langchain>=0.2.0
 langchain-community>=0.2.0
-langchain-huggingface>=0.0.3
 
 # ── Vector database ──────────────────────────────────────────────────
 pgvector>=0.2.5
 psycopg2-binary>=2.9.9
 
-# ── Embeddings (local, no API cost) ─────────────────────────────────
-# BAAI/bge-small-en-v1.5 outperforms all-MiniLM on RAG benchmarks
-sentence-transformers>=3.0.0
-transformers>=4.40.0
-torch>=2.2.0
+# ── Embeddings: fastembed (replaces sentence-transformers + torch)
+# ~50 MB vs 532 MB — same BAAI/bge model, no GPU dependencies
+fastembed>=0.3.0
 
 # ── LLM: Claude API ──────────────────────────────────────────────────
 anthropic>=0.28.0
@@ -20,7 +17,7 @@ anthropic>=0.28.0
 # ── Document loaders ─────────────────────────────────────────────────
 pypdf>=4.0.0                      # PDF
 python-docx>=1.1.0                # DOCX
-docx2txt>=0.8                     # DOCX (langchain loader uses this)
+docx2txt>=0.8                     # DOCX (langchain loader)
 python-pptx>=0.6.23               # PPTX
 unstructured>=0.14.0              # PPTX loader backend
 openpyxl>=3.1.0                   # XLSX
@@ -29,6 +26,9 @@ openpyxl>=3.1.0                   # XLSX
 pandas>=2.1.0
 numpy>=1.26.0
 
-# ── Dev / environment ────────────────────────────────────────────────
+# ── Optional: cross-encoder reranker (only needed if RERANKER_MODEL is set)
+# sentence-transformers>=3.0.0
+
+# ── Environment ──────────────────────────────────────────────────────
 python-dotenv>=1.0.0
 pyyaml>=6.0

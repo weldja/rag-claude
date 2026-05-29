@@ -19,6 +19,15 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download the BGE embedding model into the image layer.
+# This means first-time Init is instant — no download on the customer's machine.
+ENV FASTEMBED_CACHE_PATH=/app/.fastembed_cache
+RUN python -c "\
+from fastembed import TextEmbedding; \
+print('Downloading BAAI/bge-small-en-v1.5 ...'); \
+list(TextEmbedding('BAAI/bge-small-en-v1.5').embed(['warmup'])); \
+print('Embedding model ready.')"
+
 RUN mkdir -p /app/docs
 
 COPY rag_pipeline.py .

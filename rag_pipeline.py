@@ -1,11 +1,12 @@
 """
-RAG Pipeline — Claude API Edition
-─────────────────────────────────
+RAG Pipeline — Claude API Edition  (Production)
+────────────────────────────────────────────────
 Vectorstore : PostgreSQL + pgvector
-Embeddings  : BAAI/bge-small-en-v1.5  (local, HuggingFace)
-LLM         : Anthropic Claude API    (direct SDK — real token tracking)
+Embeddings  : BAAI/bge-small-en-v1.5  via fastembed  (local, no API cost)
+LLM         : Anthropic Claude API    (real streaming + token tracking)
 """
 
+import contextlib
 import os
 import sys
 import time
@@ -20,14 +21,14 @@ from dataclasses import dataclass, field
 import streamlit as st
 import yaml
 import anthropic
+import psycopg2
+import psycopg2.pool as pg_pool
 
-# LangChain — document loading / chunking / embeddings / vectorstore only
-from langchain_community.document_loaders import (
-    TextLoader, PyPDFLoader, Docx2txtLoader,
-)
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+# LangChain — document loading / chunking / vectorstore only
+from langchain_community.document_loaders import TextLoader, PyPDFLoader, Docx2txtLoader
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_community.vectorstores import PGVector
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -38,7 +39,6 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 
 CONFIG_PATH = os.getenv("CLIENT_CONFIG", "config.yaml")
-
 
 def load_client_config() -> dict:
     defaults = {
@@ -76,7 +76,7 @@ def load_client_config() -> dict:
 
 
 # ─────────────────────────────────────────────
-# Claude model pricing  ($ per million tokens)
+# Claude pricing  ($ per million tokens)
 # ─────────────────────────────────────────────
 
 CLAUDE_PRICING: Dict[str, tuple] = {
@@ -85,14 +85,11 @@ CLAUDE_PRICING: Dict[str, tuple] = {
     "claude-opus-4-6":          (15.00,  75.00),
 }
 
-
 def _model_rates(model: str):
-    """Return (input_rate, output_rate) per token for the given model."""
     for key, (inp, out) in CLAUDE_PRICING.items():
         if model == key:
             return inp / 1_000_000, out / 1_000_000
-    # Unknown model — fall back to Sonnet pricing as a safe default
-    return 3.00 / 1_000_000, 15.00 / 1_000_000
+    return 3.00 / 1_000_000, 15.00 / 1_000_000  # safe default
 
 
 # ─────────────────────────────────────────────
@@ -101,26 +98,26 @@ def _model_rates(model: str):
 
 @dataclass
 class Config:
-    docs_path: str          = field(default_factory=lambda: os.getenv("DOCS_PATH", "docs"))
-    db_host: str            = field(default_factory=lambda: os.getenv("DB_HOST", "localhost"))
-    db_port: str            = field(default_factory=lambda: os.getenv("DB_PORT", "5432"))
-    db_name: str            = field(default_factory=lambda: os.getenv("DB_NAME", "ragdb"))
-    db_user: str            = field(default_factory=lambda: os.getenv("DB_USER", "rag"))
-    db_password: str        = field(default_factory=lambda: os.getenv("DB_PASSWORD", "ragpass"))
-    collection_name: str    = field(default_factory=lambda: os.getenv("COLLECTION_NAME", "rag_docs"))
-    embedding_model: str    = field(default_factory=lambda: os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"))
-    chunk_size: int         = field(default_factory=lambda: int(os.getenv("CHUNK_SIZE", "1000")))
-    chunk_overlap: int      = field(default_factory=lambda: int(os.getenv("CHUNK_OVERLAP", "100")))
-    retrieval_k: int        = field(default_factory=lambda: int(os.getenv("RETRIEVAL_K", "4")))
-    reranker_model: str     = field(default_factory=lambda: os.getenv("RERANKER_MODEL", ""))
-    reranker_top_n: int     = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_N", "4")))
-    anthropic_api_key: str  = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
-    claude_model: str       = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001"))
-    max_tokens: int         = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "1024")))
-    temperature: float      = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.1")))
-    max_workers: int        = field(default_factory=lambda: int(os.getenv("MAX_WORKERS", "4")))
-    batch_size: int         = field(default_factory=lambda: int(os.getenv("BATCH_SIZE", "100")))
-    cache_ttl: int          = field(default_factory=lambda: int(os.getenv("CACHE_TTL", "86400")))
+    docs_path: str         = field(default_factory=lambda: os.getenv("DOCS_PATH", "docs"))
+    db_host: str           = field(default_factory=lambda: os.getenv("DB_HOST", "localhost"))
+    db_port: str           = field(default_factory=lambda: os.getenv("DB_PORT", "5432"))
+    db_name: str           = field(default_factory=lambda: os.getenv("DB_NAME", "ragdb"))
+    db_user: str           = field(default_factory=lambda: os.getenv("DB_USER", "rag"))
+    db_password: str       = field(default_factory=lambda: os.getenv("DB_PASSWORD", "ragpass"))
+    collection_name: str   = field(default_factory=lambda: os.getenv("COLLECTION_NAME", "rag_docs"))
+    embedding_model: str   = field(default_factory=lambda: os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"))
+    chunk_size: int        = field(default_factory=lambda: int(os.getenv("CHUNK_SIZE", "1000")))
+    chunk_overlap: int     = field(default_factory=lambda: int(os.getenv("CHUNK_OVERLAP", "100")))
+    retrieval_k: int       = field(default_factory=lambda: int(os.getenv("RETRIEVAL_K", "4")))
+    reranker_model: str    = field(default_factory=lambda: os.getenv("RERANKER_MODEL", ""))
+    reranker_top_n: int    = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_N", "4")))
+    anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    claude_model: str      = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001"))
+    max_tokens: int        = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "1024")))
+    temperature: float     = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.1")))
+    max_question_len: int  = field(default_factory=lambda: int(os.getenv("MAX_QUESTION_LEN", "2000")))
+    batch_size: int        = field(default_factory=lambda: int(os.getenv("BATCH_SIZE", "100")))
+    cache_ttl: int         = field(default_factory=lambda: int(os.getenv("CACHE_TTL", "86400")))
 
     @property
     def connection_string(self) -> str:
@@ -128,6 +125,19 @@ class Config:
             f"postgresql+psycopg2://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
+
+    def validate(self) -> List[str]:
+        """Return list of configuration errors (empty = valid)."""
+        errors = []
+        if not self.anthropic_api_key:
+            errors.append("ANTHROPIC_API_KEY is not set")
+        elif not self.anthropic_api_key.startswith("sk-ant-"):
+            errors.append("ANTHROPIC_API_KEY doesn't look valid (should start with sk-ant-)")
+        if self.chunk_size < 100:
+            errors.append("CHUNK_SIZE should be at least 100")
+        if self.retrieval_k < 1:
+            errors.append("RETRIEVAL_K should be at least 1")
+        return errors
 
 
 config = Config()
@@ -160,6 +170,33 @@ class APIMetrics:
 
 
 # ─────────────────────────────────────────────
+# Prompts — system/user separated for Claude
+# ─────────────────────────────────────────────
+
+# System prompt: stable instructions → good for prompt caching in future
+SYSTEM_PROMPT = """\
+You are a helpful AI assistant for business document search.
+Answer questions using ONLY the context provided.
+If the answer is not in the context, say exactly: \
+"I don't have enough information to answer that."
+
+Rules:
+- Read ALL context chunks before answering
+- Prioritise chunks that directly answer the question
+- Be concise and specific
+- Cite the source document name and page number where possible
+- Do not make up or infer information not present in the context
+- If multiple chunks give conflicting answers, use the most relevant one"""
+
+# User prompt: context + question only
+USER_PROMPT_TEMPLATE = """\
+Context:
+{context}
+
+Question: {question}"""
+
+
+# ─────────────────────────────────────────────
 # Document loaders
 # ─────────────────────────────────────────────
 
@@ -172,7 +209,7 @@ SUPPORTED_EXTENSIONS = {
 def load_document(filepath: Path) -> List[Document]:
     ext = filepath.suffix.lower()
     if ext in {".doc", ".ppt", ".xls", ".rtf"}:
-        converted = convert_legacy_office(filepath)
+        converted = _convert_legacy_office(filepath)
         if converted:
             return load_document(converted)
         logger.warning(f"Could not convert {filepath.name} — skipping")
@@ -187,22 +224,17 @@ def load_document(filepath: Path) -> List[Document]:
         elif ext == ".pptx":
             from pptx import Presentation
             prs = Presentation(str(filepath))
-            text = []
-            for slide in prs.slides:
-                for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text.strip():
-                        text.append(shape.text.strip())
-            return [Document(
-                page_content=" ".join(text),
-                metadata={"source": str(filepath)},
-            )]
+            text = [
+                shape.text.strip()
+                for slide in prs.slides
+                for shape in slide.shapes
+                if hasattr(shape, "text") and shape.text.strip()
+            ]
+            return [Document(page_content=" ".join(text), metadata={"source": str(filepath)})]
         elif ext in (".xlsx", ".csv"):
             import pandas as pd
             df = pd.read_excel(filepath) if ext == ".xlsx" else pd.read_csv(filepath)
-            return [Document(
-                page_content=df.to_string(index=False),
-                metadata={"source": str(filepath)},
-            )]
+            return [Document(page_content=df.to_string(index=False), metadata={"source": str(filepath)})]
         else:
             return []
     except Exception as e:
@@ -210,8 +242,7 @@ def load_document(filepath: Path) -> List[Document]:
         return []
 
 
-def convert_legacy_office(filepath: Path) -> Optional[Path]:
-    """Convert .doc / .ppt / .xls / .rtf → modern format via LibreOffice."""
+def _convert_legacy_office(filepath: Path) -> Optional[Path]:
     import subprocess
     ext = filepath.suffix.lower()
     fmt = "docx" if ext in {".doc", ".rtf"} else ("pptx" if ext == ".ppt" else "xlsx")
@@ -244,62 +275,67 @@ def collect_files(docs_path: str) -> List[Path]:
 
 
 # ─────────────────────────────────────────────
-# Prompt
-# ─────────────────────────────────────────────
-
-PROMPT_TEMPLATE = """\
-You are a helpful AI assistant for business document search.
-Answer the question using ONLY the context provided below.
-If the answer isn't in the context, say "I don't have enough information to answer that."
-
-Context:
-{context}
-
-Question: {question}
-
-Instructions:
-- Read ALL context chunks before answering
-- Prioritise chunks that directly answer the question over tangential mentions
-- Be concise and specific
-- Cite the source document and page number where possible
-- Do not make up information
-- If multiple chunks give different answers, use the most relevant one
-
-Answer:"""
-
-
-# ─────────────────────────────────────────────
 # RAG System
 # ─────────────────────────────────────────────
 
 class RAGSystem:
     def __init__(self, cfg: Config = config):
         self.cfg = cfg
-        self.embeddings: Optional[HuggingFaceEmbeddings] = None
+        self.embeddings: Optional[FastEmbedEmbeddings] = None
         self.vectorstore: Optional[PGVector] = None
         self.retriever = None
         self.reranker = None
         self._claude: Optional[anthropic.Anthropic] = None
+        self._pool: Optional[pg_pool.SimpleConnectionPool] = None
         self.metrics = APIMetrics(model=cfg.claude_model)
         self._query_cache: Dict[str, Dict] = {}
         self.last_indexed: Optional[datetime] = None
         self._initialized = False
 
-    # ── Embeddings ────────────────────────────────────────────────────
+    # ── Embeddings (fastembed — no PyTorch) ───────────────────────────
 
     def init_embeddings(self):
         if self.embeddings is None:
-            logger.info(f"Loading embedding model: {self.cfg.embedding_model}")
-            self.embeddings = HuggingFaceEmbeddings(
+            logger.info(f"Loading embedding model via fastembed: {self.cfg.embedding_model}")
+            cache_dir = os.getenv("FASTEMBED_CACHE_PATH", None)
+            self.embeddings = FastEmbedEmbeddings(
                 model_name=self.cfg.embedding_model,
-                model_kwargs={"device": "cpu"},
-                encode_kwargs={"batch_size": self.cfg.batch_size, "normalize_embeddings": True},
+                **({"cache_dir": cache_dir} if cache_dir else {}),
             )
+
+    # ── PostgreSQL connection pool ────────────────────────────────────
+
+    def _init_pool(self):
+        if self._pool is None:
+            self._pool = pg_pool.SimpleConnectionPool(
+                minconn=1,
+                maxconn=5,
+                host=self.cfg.db_host,
+                port=self.cfg.db_port,
+                dbname=self.cfg.db_name,
+                user=self.cfg.db_user,
+                password=self.cfg.db_password,
+            )
+
+    @contextlib.contextmanager
+    def _db(self):
+        """Yield a pooled database connection, return it when done."""
+        self._init_pool()
+        conn = self._pool.getconn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._pool.putconn(conn)
 
     # ── Vectorstore ───────────────────────────────────────────────────
 
     def connect_vectorstore(self):
         self.init_embeddings()
+        self._init_pool()
         try:
             ts_file = Path(self.cfg.docs_path) / ".last_indexed"
             if ts_file.exists():
@@ -312,21 +348,23 @@ class RAGSystem:
             embedding_function=self.embeddings,
         )
 
-    # ── QA chain (retriever + Claude client) ─────────────────────────
+    # ── QA setup (retriever + Claude client) ─────────────────────────
 
     def build_qa_chain(self):
         if self.vectorstore is None:
             raise RuntimeError("Vectorstore not ready.")
-        if not self.cfg.anthropic_api_key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY is not set. "
-                "Add it to your .env file and restart."
-            )
 
-        # Anthropic SDK client — used directly in ask()
-        self._claude = anthropic.Anthropic(api_key=self.cfg.anthropic_api_key)
+        errors = self.cfg.validate()
+        if errors:
+            raise ValueError(f"Configuration errors: {'; '.join(errors)}")
 
-        # Verify the key is usable (fast, low-cost check)
+        # Anthropic client — max_retries handles transient network/overload errors
+        self._claude = anthropic.Anthropic(
+            api_key=self.cfg.anthropic_api_key,
+            max_retries=3,
+        )
+
+        # Verify the key works (lightweight call, no cost)
         try:
             self._claude.models.list()
             logger.info(f"Claude API key verified. Model: {self.cfg.claude_model}")
@@ -341,7 +379,6 @@ class RAGSystem:
         )
 
         # Optional cross-encoder reranker
-        logger.info(f"Reranker config: '{self.cfg.reranker_model}'")
         if self.cfg.reranker_model:
             try:
                 from sentence_transformers import CrossEncoder
@@ -353,7 +390,7 @@ class RAGSystem:
                         if snap_dirs:
                             model_path = snap_dirs[0]
                 self.reranker = CrossEncoder(str(model_path))
-                logger.info(f"Reranker loaded from: {model_path}")
+                logger.info(f"Reranker loaded: {model_path}")
             except Exception as e:
                 logger.error(f"Reranker failed to load: {e}")
                 self.reranker = None
@@ -392,7 +429,7 @@ class RAGSystem:
             _cb(progress_cb, 1.00, f"Failed: {e}")
             return False
 
-    # ── File hashing (incremental indexing) ───────────────────────────
+    # ── File hashing ──────────────────────────────────────────────────
 
     def _get_file_hash(self, filepath: Path) -> str:
         h = hashlib.md5()
@@ -448,8 +485,7 @@ class RAGSystem:
 
             deleted = [k for k in stored_hashes if not Path(k).exists()]
             _cb(
-                progress_cb,
-                progress_offset + 0.05,
+                progress_cb, progress_offset + 0.05,
                 f"Incremental: {len(new_or_changed)} changed, "
                 f"{len(files) - len(new_or_changed)} unchanged, {len(deleted)} deleted",
             )
@@ -459,28 +495,22 @@ class RAGSystem:
                 self._persist_timestamp()
                 return 0
 
+            # Remove stale chunks from vectorstore using connection pool
             files_to_remove = [str(fp) for fp in new_or_changed] + deleted
             if files_to_remove:
                 try:
-                    import psycopg2
-                    conn = psycopg2.connect(
-                        host=self.cfg.db_host, port=self.cfg.db_port,
-                        dbname=self.cfg.db_name, user=self.cfg.db_user,
-                        password=self.cfg.db_password,
-                    )
-                    cur = conn.cursor()
-                    for source in files_to_remove:
-                        cur.execute(
-                            "DELETE FROM langchain_pg_embedding e "
-                            "USING langchain_pg_collection c "
-                            "WHERE e.collection_id = c.uuid "
-                            "AND c.name = %s "
-                            "AND e.cmetadata->>'source' = %s",
-                            (self.cfg.collection_name, source),
-                        )
-                        logger.info(f"Removed chunks for: {source}")
-                    conn.commit()
-                    conn.close()
+                    with self._db() as conn:
+                        cur = conn.cursor()
+                        for source in files_to_remove:
+                            cur.execute(
+                                "DELETE FROM langchain_pg_embedding e "
+                                "USING langchain_pg_collection c "
+                                "WHERE e.collection_id = c.uuid "
+                                "AND c.name = %s "
+                                "AND e.cmetadata->>'source' = %s",
+                                (self.cfg.collection_name, source),
+                            )
+                            logger.info(f"Removed chunks for: {source}")
                 except Exception as e:
                     logger.warning(f"Could not remove old chunks: {e}")
 
@@ -550,22 +580,49 @@ class RAGSystem:
 
     def _cache_set(self, question: str, result: Dict):
         if self.cfg.cache_ttl > 0:
-            self._query_cache[self._cache_key(question)] = {
-                "result": result,
-                "ts": time.time(),
-            }
+            self._query_cache[self._cache_key(question)] = {"result": result, "ts": time.time()}
 
-    # ── Ask ───────────────────────────────────────────────────────────
+    # ── Input sanitisation ────────────────────────────────────────────
+
+    def _sanitise(self, question: str) -> str:
+        q = question.strip()
+        if len(q) > self.cfg.max_question_len:
+            q = q[: self.cfg.max_question_len]
+            logger.warning("Question truncated to max length")
+        return q
+
+    # ── Retrieve + rerank (shared by ask and ask_streaming) ───────────
+
+    def _retrieve(self, question: str) -> List[Document]:
+        source_docs = self.retriever.invoke(question)
+        if self.reranker and source_docs:
+            pairs = [(question, doc.page_content) for doc in source_docs]
+            scores = self.reranker.predict(pairs)
+            scored = sorted(zip(scores, source_docs), key=lambda x: x[0], reverse=True)
+            source_docs = [doc for _, doc in scored[: self.cfg.reranker_top_n]]
+            logger.info(f"Reranked → {len(source_docs)} chunks")
+        return source_docs
+
+    def _build_sources(self, source_docs: List[Document]) -> List[Dict]:
+        sources = []
+        for doc in source_docs:
+            page = doc.metadata.get("page", "")
+            name = Path(doc.metadata.get("source", "unknown")).name
+            sources.append({
+                "content": doc.page_content[:300],
+                "metadata": doc.metadata,
+                "display_name": f"{name} p.{int(page)+1}" if page != "" else name,
+            })
+        return sources
+
+    # ── Ask (non-streaming — used by CLI and cache reads) ─────────────
 
     def ask(self, question: str) -> Dict[str, Any]:
         if not self._initialized:
-            return {
-                "answer": "System not initialised. Click Init in the sidebar.",
-                "sources": [],
-                "cached": False,
-                "error": True,
-            }
+            return {"answer": "System not initialised. Click Init in the sidebar.",
+                    "sources": [], "cached": False, "error": True}
 
+        question = self._sanitise(question)
         cached = self._cache_get(question)
         if cached:
             logger.info("Cache hit")
@@ -573,60 +630,100 @@ class RAGSystem:
 
         try:
             t0 = time.time()
-
-            # 1. Retrieve candidate chunks
-            source_docs = self.retriever.invoke(question)
-
-            # 2. Rerank (optional)
-            if self.reranker and source_docs:
-                pairs = [(question, doc.page_content) for doc in source_docs]
-                scores = self.reranker.predict(pairs)
-                scored = sorted(zip(scores, source_docs), key=lambda x: x[0], reverse=True)
-                source_docs = [doc for _, doc in scored[: self.cfg.reranker_top_n]]
-                logger.info(f"Reranked {len(pairs)} → {len(source_docs)} chunks")
-
-            # 3. Build context string
+            source_docs = self._retrieve(question)
             context = "\n\n".join(d.page_content for d in source_docs)
-            user_message = PROMPT_TEMPLATE.format(context=context, question=question)
 
-            # 4. Call Claude API — direct SDK for accurate token tracking
             response = self._claude.messages.create(
                 model=self.cfg.claude_model,
                 max_tokens=self.cfg.max_tokens,
                 temperature=self.cfg.temperature,
-                messages=[{"role": "user", "content": user_message}],
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": USER_PROMPT_TEMPLATE.format(
+                    context=context, question=question
+                )}],
             )
-
             answer = response.content[0].text
-            self.metrics.add_usage(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-            )
+            self.metrics.add_usage(response.usage.input_tokens, response.usage.output_tokens)
             logger.info(
-                f"Claude usage — in:{response.usage.input_tokens} "
-                f"out:{response.usage.output_tokens}  "
+                f"Claude — in:{response.usage.input_tokens} out:{response.usage.output_tokens} "
                 f"session_cost:${self.metrics.total_cost:.5f}"
             )
 
-            elapsed = time.time() - t0
-
-            # 5. Build source list
-            sources = []
-            for doc in source_docs:
-                page = doc.metadata.get("page", "")
-                source_name = Path(doc.metadata.get("source", "unknown")).name
-                sources.append({
-                    "content": doc.page_content[:300],
-                    "metadata": doc.metadata,
-                    "display_name": (
-                        f"{source_name} p.{int(page)+1}" if page != "" else source_name
-                    ),
-                })
-
             result = {
                 "answer": answer,
-                "sources": sources,
-                "elapsed": round(elapsed, 1),
+                "sources": self._build_sources(source_docs),
+                "elapsed": round(time.time() - t0, 1),
+                "cached": False,
+                "error": False,
+            }
+            self._cache_set(question, result)
+            return result
+
+        except anthropic.APIConnectionError:
+            return {"answer": "⚠️ Could not reach the Anthropic API. Check your internet connection.",
+                    "sources": [], "cached": False, "error": True}
+        except anthropic.RateLimitError:
+            return {"answer": "⚠️ Rate limit reached. Please wait a moment and try again.",
+                    "sources": [], "cached": False, "error": True}
+        except anthropic.AuthenticationError:
+            return {"answer": "⚠️ Invalid API key. Check ANTHROPIC_API_KEY in your .env file.",
+                    "sources": [], "cached": False, "error": True}
+        except Exception as e:
+            logger.error(f"Query failed: {e}")
+            return {"answer": f"Error: {e}", "sources": [], "cached": False, "error": True}
+
+    # ── Ask (streaming — used by the UI for live token output) ────────
+
+    def ask_streaming(self, question: str, placeholder) -> Dict[str, Any]:
+        """Stream Claude's response token-by-token into a Streamlit placeholder."""
+        if not self._initialized:
+            placeholder.error("System not initialised. Click Init in the sidebar.")
+            return {"answer": "", "sources": [], "elapsed": 0, "cached": False, "error": True}
+
+        question = self._sanitise(question)
+
+        # Return cached result (fake-stream for consistency)
+        cached = self._cache_get(question)
+        if cached:
+            logger.info("Cache hit")
+            _stream_text(cached["answer"], placeholder)
+            return {**cached, "cached": True}
+
+        try:
+            t0 = time.time()
+            source_docs = self._retrieve(question)
+            context = "\n\n".join(d.page_content for d in source_docs)
+
+            buf = ""
+            with self._claude.messages.stream(
+                model=self.cfg.claude_model,
+                max_tokens=self.cfg.max_tokens,
+                temperature=self.cfg.temperature,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": USER_PROMPT_TEMPLATE.format(
+                    context=context, question=question
+                )}],
+            ) as stream:
+                for text in stream.text_stream:
+                    buf += text
+                    placeholder.markdown(buf + "▌")
+                placeholder.markdown(buf)
+
+                final = stream.get_final_message()
+                self.metrics.add_usage(
+                    final.usage.input_tokens,
+                    final.usage.output_tokens,
+                )
+                logger.info(
+                    f"Claude stream — in:{final.usage.input_tokens} "
+                    f"out:{final.usage.output_tokens} "
+                    f"session_cost:${self.metrics.total_cost:.5f}"
+                )
+
+            result = {
+                "answer": buf,
+                "sources": self._build_sources(source_docs),
+                "elapsed": round(time.time() - t0, 1),
                 "cached": False,
                 "error": False,
             }
@@ -634,24 +731,21 @@ class RAGSystem:
             return result
 
         except anthropic.APIConnectionError as e:
-            logger.error(f"Claude API connection error: {e}")
-            return {
-                "answer": "⚠️ Could not reach the Anthropic API. Check your internet connection.",
-                "sources": [], "cached": False, "error": True,
-            }
+            msg = "⚠️ Could not reach the Anthropic API. Check your internet connection."
+            placeholder.error(msg)
+            return {"answer": msg, "sources": [], "elapsed": 0, "cached": False, "error": True}
         except anthropic.RateLimitError:
-            return {
-                "answer": "⚠️ Rate limit reached. Please wait a moment and try again.",
-                "sources": [], "cached": False, "error": True,
-            }
+            msg = "⚠️ Rate limit reached. Please wait a moment and try again."
+            placeholder.error(msg)
+            return {"answer": msg, "sources": [], "elapsed": 0, "cached": False, "error": True}
         except anthropic.AuthenticationError:
-            return {
-                "answer": "⚠️ Invalid API key. Check ANTHROPIC_API_KEY in your .env file.",
-                "sources": [], "cached": False, "error": True,
-            }
+            msg = "⚠️ Invalid API key. Check ANTHROPIC_API_KEY in your .env file."
+            placeholder.error(msg)
+            return {"answer": msg, "sources": [], "elapsed": 0, "cached": False, "error": True}
         except Exception as e:
-            logger.error(f"Query failed: {e}")
-            return {"answer": f"Error: {e}", "sources": [], "cached": False, "error": True}
+            logger.error(f"Streaming query failed: {e}")
+            placeholder.error(f"Error: {e}")
+            return {"answer": str(e), "sources": [], "elapsed": 0, "cached": False, "error": True}
 
     # ── Stats ─────────────────────────────────────────────────────────
 
@@ -659,21 +753,15 @@ class RAGSystem:
         count = 0
         if self.vectorstore:
             try:
-                import psycopg2
-                conn = psycopg2.connect(
-                    host=self.cfg.db_host, port=self.cfg.db_port,
-                    dbname=self.cfg.db_name, user=self.cfg.db_user,
-                    password=self.cfg.db_password,
-                )
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT COUNT(*) FROM langchain_pg_embedding e "
-                    "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
-                    "WHERE c.name = %s",
-                    (self.cfg.collection_name,),
-                )
-                count = cur.fetchone()[0]
-                conn.close()
+                with self._db() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT COUNT(*) FROM langchain_pg_embedding e "
+                        "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
+                        "WHERE c.name = %s",
+                        (self.cfg.collection_name,),
+                    )
+                    count = cur.fetchone()[0]
             except Exception:
                 count = -1
         files = collect_files(self.cfg.docs_path)
@@ -688,8 +776,7 @@ class RAGSystem:
             "retrieval_k": self.cfg.retrieval_k,
             "cache_size": len(self._query_cache),
             "last_indexed": (
-                self.last_indexed.strftime("%Y-%m-%d %H:%M")
-                if self.last_indexed else "Never"
+                self.last_indexed.strftime("%Y-%m-%d %H:%M") if self.last_indexed else "Never"
             ),
             "session_queries": m.total_queries,
             "session_tokens": m.total_tokens,
@@ -707,6 +794,17 @@ def _cb(cb, progress: float, message: str):
     logger.info(f"[{progress:.0%}] {message}")
 
 
+def _stream_text(text: str, placeholder, delay: float = 0.012):
+    """Fake word-by-word stream for cached responses."""
+    words = text.split()
+    buf = ""
+    for word in words:
+        buf += word + " "
+        placeholder.markdown(buf + "▌")
+        time.sleep(delay)
+    placeholder.markdown(buf.strip())
+
+
 @st.cache_resource(show_spinner=False)
 def get_rag_system() -> RAGSystem:
     return RAGSystem()
@@ -717,16 +815,6 @@ def get_client_config() -> dict:
     return load_client_config()
 
 
-def stream_text(text: str, placeholder, delay: float = 0.012):
-    words = text.split()
-    buf = ""
-    for word in words:
-        buf += word + " "
-        placeholder.markdown(buf + "▌")
-        time.sleep(delay)
-    placeholder.markdown(buf.strip())
-
-
 def _handle_question(rag: RAGSystem, question: str, cfg: dict):
     """Process a question and append to session-state messages."""
     st.session_state.messages.append({"role": "user", "content": question})
@@ -734,23 +822,19 @@ def _handle_question(rag: RAGSystem, question: str, cfg: dict):
         st.markdown(question)
     with st.chat_message("assistant"):
         placeholder = st.empty()
-        with st.spinner("Thinking..."):
-            result = rag.ask(question)
-        if result["error"]:
-            placeholder.error(result["answer"])
-        else:
-            stream_text(result["answer"], placeholder)
+        result = rag.ask_streaming(question, placeholder)   # real streaming
+        if not result["error"]:
             ui_cfg = cfg.get("ui", {})
             if ui_cfg.get("show_sources", True) and result["sources"]:
                 _render_sources(result["sources"])
             meta = []
-            if result["cached"]:
+            if result.get("cached"):
                 meta.append("⚡ cached")
             if ui_cfg.get("show_response_time", True) and result.get("elapsed"):
                 meta.append(f"⏱ {result['elapsed']}s")
             if meta:
                 st.caption(" · ".join(meta))
-            if ui_cfg.get("show_copy_button", True):
+            if ui_cfg.get("show_copy_button", True) and result["answer"]:
                 st.button(
                     "📋 Copy answer",
                     key=f"copy_{hashlib.md5(question.encode()).hexdigest()[:8]}",
@@ -762,8 +846,8 @@ def _handle_question(rag: RAGSystem, question: str, cfg: dict):
     st.session_state.messages.append({
         "role": "assistant",
         "content": result["answer"],
-        "sources": result["sources"],
-        "cached": result["cached"],
+        "sources": result.get("sources", []),
+        "cached": result.get("cached", False),
         "elapsed": result.get("elapsed"),
     })
 
@@ -786,10 +870,10 @@ def _render_sources(sources: List[Dict]):
 # ─────────────────────────────────────────────
 
 def run_ui():
-    cfg = get_client_config()
-    branding  = cfg.get("branding", {})
-    ui_cfg    = cfg.get("ui", {})
-    suggested = cfg.get("suggested_questions", [])
+    cfg            = get_client_config()
+    branding       = cfg.get("branding", {})
+    ui_cfg         = cfg.get("ui", {})
+    suggested      = cfg.get("suggested_questions", [])
     accent         = branding.get("accent_colour", "#185FA5")
     company        = branding.get("company_name", "RAG Assistant")
     assistant_name = branding.get("assistant_name", "Document Assistant")
@@ -811,16 +895,8 @@ def run_ui():
         padding: 12px 16px;
         margin-bottom: 1rem;
     }}
-    .brand-header h1 {{
-        color: {accent};
-        font-size: 1.4rem;
-        margin: 0 0 4px 0;
-    }}
-    .brand-header p {{
-        color: #5F5E5A;
-        font-size: 0.9rem;
-        margin: 0;
-    }}
+    .brand-header h1 {{ color: {accent}; font-size: 1.4rem; margin: 0 0 4px 0; }}
+    .brand-header p  {{ color: #5F5E5A;  font-size: 0.9rem; margin: 0; }}
     .cost-pill {{
         background: {accent}12;
         border: 1px solid {accent}40;
@@ -846,11 +922,10 @@ def run_ui():
         </div>
         """, unsafe_allow_html=True)
 
-        # Claude config + live cost
         with st.expander("⚙️ Configuration"):
             st.caption(f"**LLM:** Claude API")
             st.caption(f"**Model:** `{config.claude_model}`")
-            st.caption(f"**Embeddings:** `{config.embedding_model}`")
+            st.caption(f"**Embeddings:** `{config.embedding_model}` (local)")
             if not config.anthropic_api_key:
                 st.warning("⚠️ ANTHROPIC_API_KEY not set")
             elif rag._initialized:
@@ -862,12 +937,10 @@ def run_ui():
                     unsafe_allow_html=True,
                 )
                 if m.total_queries:
-                    avg = m.total_cost / m.total_queries
-                    st.caption(f"Avg cost/query: ${avg:.5f}")
+                    st.caption(f"Avg cost/query: ${m.total_cost / m.total_queries:.5f}")
 
         st.markdown("---")
 
-        # Documents
         st.markdown("**📂 Documents**")
         files = collect_files(config.docs_path)
         if files:
@@ -880,36 +953,33 @@ def run_ui():
 
         with st.expander("ℹ️ When to use each button"):
             st.markdown("""
-**🚀 Init** — Run on first visit or after restart. Connects to existing index, no re-indexing.
+**🚀 Init** — Every visit. Connects to existing index, no re-indexing.
 
-**⚡ Smart** — Use when you add or change documents. Only processes new/changed files. Fast.
+**⚡ Smart** — After adding/changing documents. Processes only new/changed files.
 
-**🔄 Full** — Full re-index from scratch. Use if something seems wrong or after bulk changes.
+**🔄 Full** — First time setup or full re-index from scratch.
             """)
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            init_btn    = st.button("🚀 Init",  use_container_width=True, help="Connect to existing index")
+            init_btn    = st.button("🚀 Init",  use_container_width=True)
         with col2:
-            update_btn  = st.button("⚡ Smart", use_container_width=True, help="Index new/changed files only")
+            update_btn  = st.button("⚡ Smart", use_container_width=True)
         with col3:
-            rebuild_btn = st.button("🔄 Full",  use_container_width=True, help="Re-index all documents from scratch")
+            rebuild_btn = st.button("🔄 Full",  use_container_width=True)
 
-        # New-file detection warning
         ts_file = Path("/app/docs") / ".last_indexed"
         if ts_file.exists():
             try:
                 last_ts = datetime.fromisoformat(ts_file.read_text().strip())
                 new_files = [f for f in files if f.stat().st_mtime > last_ts.timestamp()]
                 if new_files:
-                    st.warning(f"⚠️ {len(new_files)} new/changed file(s) detected — click Smart to update")
+                    st.warning(f"⚠️ {len(new_files)} new/changed file(s) — click Smart")
             except Exception:
                 pass
-        else:
-            if files:
-                st.warning("⚠️ Documents not yet indexed — click Smart or Full to index")
+        elif files:
+            st.warning("⚠️ Documents not yet indexed — click Smart or Full")
 
-        # Stats
         if rag._initialized:
             st.markdown("---")
             st.markdown("**📊 Stats**")
@@ -922,7 +992,6 @@ def run_ui():
                 rag._query_cache.clear()
                 st.success("Cache cleared")
 
-        # Suggested questions
         if rag._initialized and suggested:
             st.markdown("---")
             st.markdown("**💡 Suggested questions**")
@@ -968,15 +1037,13 @@ def run_ui():
                 "Then restart the container."
             )
         st.info("""
-**Which button should I click?**
-
 | Button | When to use |
 |--------|-------------|
 | 🚀 **Init** | Every visit — connects to your existing index |
 | ⚡ **Smart** | After adding or changing documents |
-| 🔄 **Full** | First time setup, or if something seems wrong |
+| 🔄 **Full** | First time setup, or full reset |
         """)
-        st.markdown("**Supported formats:** PDF · DOCX · PPTX · TXT · XLSX · CSV · DOC · PPT · XLS · RTF")
+        st.markdown("**Supported:** PDF · DOCX · PPTX · TXT · XLSX · CSV · DOC · PPT · XLS · RTF")
         return
 
     tab_chat, tab_search, tab_about = st.tabs(["💬 Chat", "🔎 Search", "ℹ️ About"])
@@ -1034,8 +1101,8 @@ def run_ui():
             with st.spinner("Searching..."):
                 docs = rag.vectorstore.similarity_search(query, k=k)
             for i, doc in enumerate(docs, 1):
-                src  = Path(doc.metadata.get("source", "unknown")).name
-                page = doc.metadata.get("page", "")
+                src   = Path(doc.metadata.get("source", "unknown")).name
+                page  = doc.metadata.get("page", "")
                 label = f"{src} p.{int(page)+1}" if page != "" else src
                 with st.expander(f"Result {i} — {label}"):
                     st.text(doc.page_content)
@@ -1044,16 +1111,11 @@ def run_ui():
     with tab_about:
         st.subheader(f"About {company} — {assistant_name}")
         st.markdown(f"""
-**Tagline:** {tagline}
-
 **LLM:** Claude API (`{config.claude_model}`)
-
-**Embeddings:** `{config.embedding_model}` (local)
-
-**Supported document types:** PDF · DOCX · PPTX · TXT · XLSX · CSV
+**Embeddings:** `{config.embedding_model}` (local via fastembed)
+**Supported formats:** PDF · DOCX · PPTX · TXT · XLSX · CSV
         """)
-        stats = rag.get_stats()
-        st.json(stats)
+        st.json(rag.get_stats())
 
 
 # ─────────────────────────────────────────────
@@ -1068,7 +1130,6 @@ def cli_index():
     n = rag.index_documents()
     print(f"[{datetime.now()}] Done — {n} chunks indexed.")
 
-
 def cli_query(question: str):
     rag = RAGSystem()
     rag.setup()
@@ -1077,13 +1138,11 @@ def cli_query(question: str):
     for i, src in enumerate(result["sources"], 1):
         print(f"Source {i}: {src.get('display_name', '?')}")
 
-
 def cli_status():
     rag = RAGSystem()
     rag.init_embeddings()
     rag.connect_vectorstore()
     print(json.dumps(rag.get_stats(), indent=2))
-
 
 if __name__ == "__main__":
     import argparse
@@ -1095,8 +1154,7 @@ if __name__ == "__main__":
         cli_index()
     elif args.mode == "query":
         if not args.query:
-            print("--query is required")
-            sys.exit(1)
+            print("--query is required"); sys.exit(1)
         cli_query(args.query)
     elif args.mode == "status":
         cli_status()
