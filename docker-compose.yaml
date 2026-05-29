@@ -1,0 +1,67 @@
+services:
+
+  # ── PostgreSQL + pgvector ────────────────────────────────────────
+  db:
+    image: ankane/pgvector:latest
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ragdb
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ragpass
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d ragdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Streamlit app ────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./docs:/app/docs
+      - ./config.yaml:/app/config.yaml:ro
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=ragdb
+      - DB_USER=rag
+      - DB_PASSWORD=ragpass
+      - PYTHONUNBUFFERED=1
+    working_dir: /app
+    restart: unless-stopped
+    command: >
+      streamlit run rag_pipeline.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.headless=true
+      --server.fileWatcherType=none
+      --server.enableCORS=false
+      --server.enableXsrfProtection=false
+
+  # ── Nginx – SSL termination ──────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
