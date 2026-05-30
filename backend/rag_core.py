@@ -649,7 +649,22 @@ class RAGSystem:
         try:
             t0 = time.time()
             yield {"type": "status", "data": "Searching documents..."}
-            source_docs = self._retrieve(question)
+
+            # If this is a follow-up (history exists), rewrite the query to be specific
+            search_query = question
+            if history and len(history) > 1:
+                # Extract keywords from the last assistant response for better retrieval
+                last_assistant = next(
+                    (h["content"] for h in reversed(history[:-1]) if h.get("role") == "assistant"),
+                    None
+                )
+                if last_assistant and len(question.split()) < 10:
+                    # Short follow-up — augment with context from previous answer
+                    # Take first 200 chars of last answer as search context
+                    search_query = f"{question} {last_assistant[:200]}"
+                    logger.info(f"Augmented search query for follow-up (original: {question!r})")
+
+            source_docs = self._retrieve(search_query)
             yield {"type": "status", "data": "Generating answer..."}
             context = "\n\n".join(d.page_content for d in source_docs)
 
