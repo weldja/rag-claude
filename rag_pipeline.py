@@ -539,18 +539,30 @@ class RAGSystem:
 
         _cb(progress_cb, progress_offset + 0.60, f"Embedding {len(all_chunks)} chunks...")
 
+        EMBED_BATCH = 32  # embed and insert in small batches to avoid memory spikes
+
         if not incremental:
-            self.vectorstore = PGVector.from_documents(
-                documents=all_chunks,
-                embedding=self.embeddings,
-                collection_name=self.cfg.collection_name,
-                connection_string=self.cfg.connection_string,
-                pre_delete_collection=True,
-            )
+            # Delete existing collection first
+            try:
+                PGVector(
+                    connection_string=self.cfg.connection_string,
+                    collection_name=self.cfg.collection_name,
+                    embedding_function=self.embeddings,
+                    pre_delete_collection=True,
+                )
+            except Exception:
+                pass
+            # Insert in batches
+            for i in range(0, len(all_chunks), EMBED_BATCH):
+                batch = all_chunks[i:i + EMBED_BATCH]
+                logger.info(f"  Embedding batch {i//EMBED_BATCH + 1}/{(len(all_chunks)-1)//EMBED_BATCH + 1} ({len(batch)} chunks)...")
+                self.vectorstore.add_documents(batch)
             self._save_hash_store(current_hashes)
         else:
             if all_chunks:
-                self.vectorstore.add_documents(all_chunks)
+                for i in range(0, len(all_chunks), EMBED_BATCH):
+                    batch = all_chunks[i:i + EMBED_BATCH]
+                    self.vectorstore.add_documents(batch)
 
         self._persist_timestamp()
         logger.info(f"Indexed {len(all_chunks)} chunks from {len(files_to_index)} files")
