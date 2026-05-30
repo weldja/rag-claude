@@ -24,15 +24,41 @@ import anthropic
 import psycopg2
 import psycopg2.pool as pg_pool
 
-# LangChain — document loading / chunking / vectorstore only
-from langchain_community.document_loaders import TextLoader, PyPDFLoader, Docx2txtLoader
-from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
-from langchain_community.vectorstores import PGVector
+# LangChain — chunking + vectorstore only (no community package)
+from langchain_postgres import PGVector
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
+
+# Direct library imports (replaces langchain-community loaders)
+import pypdf
+import docx2txt
+from fastembed import TextEmbedding
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────
+# FastEmbed wrapper (implements LangChain Embeddings interface)
+# Replaces langchain_community FastEmbedEmbeddings — no deprecation warnings
+# ─────────────────────────────────────────────
+
+class FastEmbedWrapper(Embeddings):
+    """Thin wrapper around fastembed.TextEmbedding for LangChain compatibility."""
+
+    def __init__(self, model_name: str, cache_dir: Optional[str] = None):
+        kwargs = {}
+        if cache_dir:
+            kwargs["cache_dir"] = cache_dir
+        self._model = TextEmbedding(model_name, **kwargs)
+        self.model_name = model_name
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return [list(v) for v in self._model.embed(texts)]
+
+    def embed_query(self, text: str) -> List[float]:
+        return list(list(self._model.embed([text]))[0])
 
 # ─────────────────────────────────────────────
 # Client config loader
@@ -122,7 +148,7 @@ class Config:
     @property
     def connection_string(self) -> str:
         return (
-            f"postgresql+psycopg2://{self.db_user}:{self.db_password}"
+            f"postgresql+psycopg://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 
@@ -216,11 +242,22 @@ def load_document(filepath: Path) -> List[Document]:
         return []
     try:
         if ext == ".pdf":
-            return PyPDFLoader(str(filepath)).load()
+            reader = pypdf.PdfReader(str(filepath))
+            docs = []
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                if text.strip():
+                    docs.append(Document(
+                        page_content=text,
+                        metadata={"source": str(filepath), "page": i},
+                    ))
+            return docs
         elif ext == ".txt":
-            return TextLoader(str(filepath), encoding="utf-8").load()
+            text = Path(filepath).read_text(encoding="utf-8", errors="replace")
+            return [Document(page_content=text, metadata={"source": str(filepath)})]
         elif ext == ".docx":
-            return Docx2txtLoader(str(filepath)).load()
+            text = docx2txt.process(str(filepath))
+            return [Document(page_content=text or "", metadata={"source": str(filepath)})]
         elif ext == ".pptx":
             from pptx import Presentation
             prs = Presentation(str(filepath))
@@ -281,7 +318,7 @@ def collect_files(docs_path: str) -> List[Path]:
 class RAGSystem:
     def __init__(self, cfg: Config = config):
         self.cfg = cfg
-        self.embeddings: Optional[FastEmbedEmbeddings] = None
+        self.embeddings: Optional[FastEmbedWrapper] = None
         self.vectorstore: Optional[PGVector] = None
         self.retriever = None
         self.reranker = None
@@ -298,9 +335,9 @@ class RAGSystem:
         if self.embeddings is None:
             logger.info(f"Loading embedding model via fastembed: {self.cfg.embedding_model}")
             cache_dir = os.getenv("FASTEMBED_CACHE_PATH", None)
-            self.embeddings = FastEmbedEmbeddings(
+            self.embeddings = FastEmbedWrapper(
                 model_name=self.cfg.embedding_model,
-                **({"cache_dir": cache_dir} if cache_dir else {}),
+                cache_dir=cache_dir,
             )
 
     # ── PostgreSQL connection pool ────────────────────────────────────
@@ -343,9 +380,9 @@ class RAGSystem:
         except Exception:
             pass
         self.vectorstore = PGVector(
-            connection_string=self.cfg.connection_string,
+            embeddings=self.embeddings,
             collection_name=self.cfg.collection_name,
-            embedding_function=self.embeddings,
+            connection=self.cfg.connection_string,
         )
 
     # ── QA setup (retriever + Claude client) ─────────────────────────
@@ -545,9 +582,9 @@ class RAGSystem:
             # Delete existing collection first
             try:
                 PGVector(
-                    connection_string=self.cfg.connection_string,
+                    embeddings=self.embeddings,
                     collection_name=self.cfg.collection_name,
-                    embedding_function=self.embeddings,
+                    connection=self.cfg.connection_string,
                     pre_delete_collection=True,
                 )
             except Exception:
