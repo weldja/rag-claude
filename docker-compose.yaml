@@ -42,7 +42,7 @@ services:
       - DB_PASSWORD=ragpass
       - FASTEMBED_CACHE_PATH=/app/.fastembed_cache
       - PYTHONUNBUFFERED=1
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:
@@ -69,7 +69,7 @@ services:
       - "443:443"
     volumes:
       - ./certs:/etc/nginx/certs:ro
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:
