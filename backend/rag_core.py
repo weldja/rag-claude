@@ -429,6 +429,10 @@ class RAGSystem:
             self.build_qa_chain()
             _cb(progress_cb, 1.00, "Ready!")
             return True
+        except ValueError as e:
+            logger.error(f"RAG setup config error: {e}")
+            _cb(progress_cb, 1.00, f"Failed: {e}")
+            return False
         except Exception as e:
             logger.exception("RAG setup failed")
             _cb(progress_cb, 1.00, f"Failed: {e}")
@@ -652,15 +656,17 @@ class RAGSystem:
 
             # If this is a follow-up (history exists), rewrite the query to be specific
             search_query = question
+            logger.info(f"History received: {len(history) if history else 0} items")
+            if history:
+                for idx, h in enumerate(history):
+                    logger.info(f"  history[{idx}] role={h.get('role')} len={len(h.get('content',''))}")
             if history and len(history) > 1:
-                # Extract keywords from the last assistant response for better retrieval
                 last_assistant = next(
                     (h["content"] for h in reversed(history[:-1]) if h.get("role") == "assistant"),
                     None
                 )
-                if last_assistant and len(question.split()) < 10:
-                    # Short follow-up — augment with context from previous answer
-                    # Take first 200 chars of last answer as search context
+                logger.info(f"last_assistant found: {bool(last_assistant)}, question words: {len(question.split())}")
+                if last_assistant and len(question.split()) <= 15:
                     search_query = f"{question} {last_assistant[:200]}"
                     logger.info(f"Augmented search query for follow-up (original: {question!r})")
 
