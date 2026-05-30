@@ -427,6 +427,11 @@ class RAGSystem:
         if self.vectorstore is None:
             raise RuntimeError("Vectorstore not ready.")
 
+        # Always read the freshest key — env var takes priority, then saved file
+        fresh_key = os.getenv("ANTHROPIC_API_KEY", "") or load_saved_api_key()
+        if fresh_key:
+            self.cfg.anthropic_api_key = fresh_key
+
         errors = self.cfg.validate()
         if errors:
             raise ValueError(f"Configuration errors: {'; '.join(errors)}")
