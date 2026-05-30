@@ -30,7 +30,6 @@ services:
       db:
         condition: service_healthy
     volumes:
-      #- ./docs:/app/docs
       - C:\Users\jamesw\Documents\rag-claude-docs:/app/docs
       - ./config.yaml:/app/config.yaml:ro
     env_file:
@@ -57,7 +56,7 @@ services:
       retries: 3
       start_period: 60s
 
-  # ── React frontend (nginx) ───────────────────────────────────────
+  # ── React frontend (nginx + SSL) ─────────────────────────────────
   frontend:
     build:
       context: ./frontend
@@ -66,7 +65,10 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "8501:80"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
     restart: unless-stopped
     deploy:
       resources:
