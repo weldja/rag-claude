@@ -944,17 +944,32 @@ def _handle_question(rag: RAGSystem, question: str, cfg: dict):
     })
 
 
+def _file_icon(name: str) -> str:
+    ext = Path(name).suffix.lower()
+    return {"pdf": "📄", "docx": "📝", "doc": "📝", "pptx": "📊", "ppt": "📊",
+            "xlsx": "📋", "xls": "📋", "csv": "📋", "txt": "📃"}.get(ext.lstrip("."), "📄")
+
+
 def _render_sources(sources: List[Dict]):
     if not sources:
         return
-    with st.expander(f"📚 {len(sources)} source(s)"):
-        for i, src in enumerate(sources, 1):
-            label = src.get("display_name") or Path(
-                src["metadata"].get("source", "unknown")
-            ).name
-            st.markdown(f"**Source {i}** — `{label}`")
-            st.text(src["content"])
-            st.markdown("---")
+    cards_html = ""
+    for i, src in enumerate(sources, 1):
+        label   = src.get("display_name") or Path(src["metadata"].get("source", "unknown")).name
+        fname   = Path(src["metadata"].get("source", label)).name
+        icon    = _file_icon(fname)
+        preview = src["content"][:180].replace("<", "&lt;").replace(">", "&gt;").replace("\n", " ")
+        cards_html += f"""
+        <div class="src-card">
+          <div class="src-header">
+            <span class="src-icon">{icon}</span>
+            <span class="src-label">{label}</span>
+            <span class="src-num">#{i}</span>
+          </div>
+          <div class="src-preview">{preview}…</div>
+        </div>"""
+    with st.expander(f"📚 {len(sources)} source{'s' if len(sources)>1 else ''} referenced"):
+        st.markdown(f'<div class="src-grid">{cards_html}</div>', unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────
@@ -973,88 +988,381 @@ def run_ui():
 
     st.set_page_config(
         page_title=f"{company} — {assistant_name}",
-        page_icon="📄",
+        page_icon="🔍",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
+    # ── Design system ─────────────────────────────────────────────────
+    # Derives from accent colour but adds a full modern token set
     st.markdown(f"""
     <style>
-    .brand-header {{
-        background: {accent}18;
-        border-left: 4px solid {accent};
-        border-radius: 0 8px 8px 0;
-        padding: 12px 16px;
-        margin-bottom: 1rem;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+    :root {{
+        --accent:        {accent};
+        --accent-light:  {accent}18;
+        --accent-mid:    {accent}40;
+        --ink:           #0F172A;
+        --ink-mid:       #475569;
+        --ink-light:     #94A3B8;
+        --surface:       #FFFFFF;
+        --surface-2:     #F8FAFC;
+        --surface-3:     #F1F5F9;
+        --border:        #E2E8F0;
+        --border-light:  #F1F5F9;
+        --success:       #059669;
+        --success-bg:    #ECFDF5;
+        --warn:          #D97706;
+        --warn-bg:       #FFFBEB;
+        --radius-sm:     6px;
+        --radius:        10px;
+        --radius-lg:     16px;
+        --shadow-sm:     0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+        --shadow:        0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
+        --shadow-lg:     0 12px 32px rgba(0,0,0,0.10), 0 4px 8px rgba(0,0,0,0.06);
     }}
-    .brand-header h1 {{ color: {accent}; font-size: 1.4rem; margin: 0 0 4px 0; }}
-    .brand-header p  {{ color: #5F5E5A;  font-size: 0.9rem; margin: 0; }}
+
+    html, body, [class*="css"] {{
+        font-family: 'Inter', -apple-system, sans-serif !important;
+    }}
+
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] {{
+        background: var(--surface-2) !important;
+        border-right: 1px solid var(--border) !important;
+        min-width: 260px !important;
+        max-width: 280px !important;
+    }}
+    [data-testid="stSidebar"] > div:first-child {{
+        padding-top: 0 !important;
+        padding-bottom: 1rem !important;
+        overflow-y: auto !important;
+    }}
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{
+        gap: 0.25rem !important;
+    }}
+
+    /* ── Brand header ── */
+    .brand-header {{
+        background: linear-gradient(135deg, var(--accent) 0%, {accent}cc 100%);
+        padding: 14px 16px 12px;
+        margin: -1rem -1rem 1rem;
+        position: relative;
+        overflow: hidden;
+    }}
+    .brand-header::after {{
+        content: '';
+        position: absolute; top: 0; right: -20px;
+        width: 80px; height: 100%;
+        background: rgba(255,255,255,0.06);
+        transform: skewX(-15deg);
+    }}
+    .brand-header h1 {{
+        color: #fff; font-size: 1rem; font-weight: 700;
+        margin: 0 0 2px; letter-spacing: -0.01em;
+    }}
+    .brand-header p {{
+        color: rgba(255,255,255,0.75); font-size: 0.75rem; margin: 0;
+    }}
+    .brand-dot {{
+        display: inline-block; width: 6px; height: 6px;
+        border-radius: 50%; background: #4ADE80;
+        margin-right: 5px; vertical-align: middle;
+        box-shadow: 0 0 6px #4ADE80;
+    }}
+
+    /* ── Cost pill ── */
     .cost-pill {{
-        background: {accent}12;
-        border: 1px solid {accent}40;
+        background: var(--accent-light);
+        border: 1px solid var(--accent-mid);
         border-radius: 999px;
-        padding: 2px 10px;
-        font-size: 0.78rem;
-        color: {accent};
-        font-weight: 600;
+        padding: 3px 10px;
+        font-size: 0.76rem; font-weight: 600;
+        color: var(--accent);
+        display: inline-block; margin-top: 6px;
+    }}
+
+    /* ── Sidebar section headers ── */
+    .sidebar-section {{
+        font-size: 0.65rem; font-weight: 700; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--ink-light);
+        margin: 12px 0 4px; padding: 0;
+    }}
+
+    /* ── File list ── */
+    .file-item {{
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 8px; border-radius: var(--radius-sm);
+        border: 1px solid var(--border-light);
+        background: var(--surface);
+        margin-bottom: 4px;
+        font-size: 0.82rem; color: var(--ink);
+    }}
+    .file-item .file-name {{ flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+    .file-item .file-ext {{
+        font-size: 0.68rem; font-weight: 700; padding: 1px 5px;
+        border-radius: 3px; text-transform: uppercase;
+    }}
+    .ext-pdf  {{ background: #FEE2E2; color: #991B1B; }}
+    .ext-docx, .ext-doc {{ background: #DBEAFE; color: #1E40AF; }}
+    .ext-xlsx, .ext-xls, .ext-csv {{ background: #D1FAE5; color: #065F46; }}
+    .ext-pptx, .ext-ppt {{ background: #FEF3C7; color: #92400E; }}
+    .ext-txt  {{ background: var(--surface-3); color: var(--ink-mid); }}
+
+    /* ── Index buttons ── */
+    .index-btn-group {{ display: flex; gap: 6px; margin: 8px 0; }}
+
+    /* ── Stats cards ── */
+    .stats-grid {{
+        display: grid; grid-template-columns: 1fr 1fr;
+        gap: 5px; margin: 6px 0;
+    }}
+    .stat-card {{
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 6px 8px; text-align: center;
+    }}
+    .stat-val {{ font-size: 1.1rem; font-weight: 700; color: var(--accent); line-height: 1; }}
+    .stat-lbl {{ font-size: 0.65rem; color: var(--ink-light); margin-top: 2px; }}
+
+    /* ── Suggested question pills ── */
+    .sq-pill {{
         display: inline-block;
-        margin-top: 4px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 0.82rem; color: var(--ink);
+        cursor: pointer;
+        margin: 3px 2px;
+        transition: all .15s;
+    }}
+    .sq-pill:hover {{ background: var(--accent-light); border-color: var(--accent); color: var(--accent); }}
+
+    /* ── Welcome screen ── */
+    .welcome-hero {{
+        text-align: center;
+        padding: 1.5rem 1rem 1rem;
+        max-width: 580px;
+        margin: 0 auto;
+    }}
+    .welcome-icon {{
+        width: 48px; height: 48px; border-radius: 14px;
+        background: linear-gradient(135deg, var(--accent), {accent}99);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 1.4rem;
+        margin: 0 auto 0.75rem;
+        box-shadow: var(--shadow-sm);
+    }}
+    .welcome-hero h2 {{
+        font-size: 1.3rem; font-weight: 700; color: var(--ink);
+        letter-spacing: -0.02em; margin: 0 0 0.35rem;
+    }}
+    .welcome-hero p {{
+        color: var(--ink-mid); font-size: 0.88rem; line-height: 1.5; margin: 0 0 1rem;
+    }}
+    .example-grid {{
+        display: grid; grid-template-columns: 1fr 1fr;
+        gap: 6px; margin-top: 0.75rem; text-align: left;
+    }}
+    .example-card {{
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 9px 12px;
+        font-size: 0.82rem; color: var(--ink-mid);
+        cursor: pointer; transition: all .15s;
+        line-height: 1.4;
+    }}
+    .example-card:hover {{ border-color: var(--accent); color: var(--accent); background: var(--accent-light); }}
+    .example-card strong {{ display: block; color: var(--ink); margin-bottom: 2px; font-size: 0.8rem; }}
+
+    /* ── Source cards ── */
+    .src-grid {{ display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }}
+    .src-card {{
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 10px 12px;
+        transition: box-shadow .15s;
+    }}
+    .src-card:hover {{ box-shadow: var(--shadow-sm); }}
+    .src-header {{ display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }}
+    .src-icon {{ font-size: 1rem; }}
+    .src-label {{ font-size: 0.82rem; font-weight: 600; color: var(--ink); flex: 1; }}
+    .src-num {{
+        font-size: 0.68rem; font-weight: 700;
+        background: var(--accent-light); color: var(--accent);
+        border-radius: 999px; padding: 1px 7px;
+    }}
+    .src-preview {{ font-size: 0.78rem; color: var(--ink-mid); line-height: 1.5; }}
+
+    /* ── Step guide cards ── */
+    .step-card {{
+        border-radius: var(--radius);
+        padding: 1rem 1.25rem;
+        margin-bottom: 0.75rem;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        box-shadow: var(--shadow-sm);
+    }}
+    .step-number {{
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 24px; height: 24px; border-radius: 50%;
+        background: var(--accent); color: #fff;
+        font-size: 0.72rem; font-weight: 700;
+        margin-bottom: 0.5rem;
+    }}
+    .step-card h3 {{ font-size: 0.95rem; font-weight: 600; color: var(--ink); margin: 0 0 0.2rem; }}
+    .step-card p  {{ font-size: 0.84rem; color: var(--ink-mid); margin: 0; }}
+
+    /* ── Chat loading stages ── */
+    .thinking-stage {{
+        display: flex; align-items: center; gap: 8px;
+        font-size: 0.84rem; color: var(--ink-mid);
+        padding: 6px 0;
+    }}
+    .thinking-dot {{
+        width: 6px; height: 6px; border-radius: 50%;
+        background: var(--accent); opacity: 0.5;
+        animation: pulse 1.4s ease-in-out infinite;
+    }}
+    @keyframes pulse {{ 0%,100% {{ opacity:.3; transform:scale(.8); }} 50% {{ opacity:1; transform:scale(1.2); }} }}
+
+    /* ── General cleanup ── */
+    /* Hide Streamlit toolbar and reduce top padding */
+    [data-testid="stToolbar"] {{ display: none !important; }}
+    header[data-testid="stHeader"] {{ display: none !important; }}
+    .block-container {{
+        padding-top: 1.5rem !important;
+        padding-bottom: 1rem !important;
+        max-width: 100% !important;
+    }}
+    /* Tighten tab content area */
+    [data-testid="stTabContent"] {{
+        padding-top: 0.5rem !important;
+    }}
+    /* Tab indicator — match accent colour */
+    [data-testid="stTabs"] [role="tablist"] {{
+        border-bottom: 1px solid var(--border) !important;
+        gap: 0 !important;
+    }}
+    [data-testid="stTabs"] button[role="tab"] {{
+        font-size: 0.88rem !important;
+        font-weight: 500 !important;
+        color: var(--ink-mid) !important;
+        border-bottom: 2px solid transparent !important;
+        padding: 0.5rem 1rem !important;
+    }}
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {{
+        color: var(--accent) !important;
+        border-bottom-color: var(--accent) !important;
+        font-weight: 600 !important;
+    }}
+    /* Hide the default red BaseWeb tab highlight */
+    [data-baseweb="tab-highlight"] {{ display: none !important; }}
+    .stButton > button {{
+        border-radius: var(--radius-sm) !important;
+        font-weight: 500 !important;
+        font-size: 0.85rem !important;
+        transition: all .15s !important;
+    }}
+    .stTextInput > div > div > input {{
+        border-radius: var(--radius-sm) !important;
+        border-color: var(--border) !important;
+    }}
+    .stTextInput > div > div > input:focus {{
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px {accent}20 !important;
+    }}
+    [data-testid="stChatMessage"] {{
+        padding: 0.5rem 0 !important;
+    }}
+    .stTabs [data-baseweb="tab"] {{
+        font-size: 0.88rem !important;
+    }}
+    div[data-testid="stExpander"] {{
+        border-radius: var(--radius) !important;
+        border-color: var(--border) !important;
     }}
     </style>
     """, unsafe_allow_html=True)
 
     rag = get_rag_system()
 
+    # ── Auto-connect if everything is ready ──────────────────────────
+    # No "Connect" button needed — if key + index exist, connect silently
+    files = collect_files(config.docs_path)  # needed for auto-connect check
+    if not rag._initialized:
+        fresh_key = os.getenv("ANTHROPIC_API_KEY", "") or load_saved_api_key()
+        if fresh_key and files:
+            _auto_chunks = 0
+            try:
+                _ac = psycopg2.connect(
+                    host=config.db_host, port=int(config.db_port),
+                    dbname=config.db_name, user=config.db_user,
+                    password=config.db_password,
+                )
+                _acur = _ac.cursor()
+                _acur.execute(
+                    "SELECT COUNT(*) FROM langchain_pg_embedding e "
+                    "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
+                    "WHERE c.name = %s", (config.collection_name,)
+                )
+                _auto_chunks = _acur.fetchone()[0]
+                _ac.close()
+            except Exception:
+                pass
+            if _auto_chunks > 0:
+                # Silently connect in background — user sees chat immediately
+                with st.spinner("Opening your knowledge base..."):
+                    rag.setup(rebuild=False)
+
     # ── Sidebar ──────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown(f"""
         <div class="brand-header">
             <h1>{company}</h1>
-            <p>{assistant_name}</p>
+            <p><span class="brand-dot"></span>{assistant_name}</p>
         </div>
         """, unsafe_allow_html=True)
 
-        with st.expander("⚙️ Configuration", expanded=not config.anthropic_api_key):
+        # ── API key / Configuration ───────────────────────────────────
+        with st.expander("⚙️ Configuration", expanded=not (os.getenv("ANTHROPIC_API_KEY","") or load_saved_api_key())):
             st.caption(f"**Model:** `{config.claude_model}`")
-            st.caption(f"**Embeddings:** `{config.embedding_model}` (local)")
-
-            # ── API key entry ──────────────────────────────────────────
             saved_key = load_saved_api_key()
             env_key   = os.getenv("ANTHROPIC_API_KEY", "")
             has_key   = bool(env_key or saved_key)
 
             if env_key:
-                st.success("✅ API key set via environment")
+                st.success("✅ API key configured")
             elif saved_key:
                 st.success("✅ API key saved")
-                if st.button("🗑️ Remove saved key", key="del_key"):
+                if st.button("Remove key", key="del_key"):
                     delete_api_key()
                     config.anthropic_api_key = ""
-                    if rag._initialized:
-                        rag._initialized = False
-                        rag._claude = None
+                    rag._initialized = False
+                    rag._claude = None
                     st.rerun()
             else:
-                st.warning("⚠️ No API key configured")
-                st.markdown("**Enter your Anthropic API key:**")
+                st.warning("No API key set")
                 new_key = st.text_input(
-                    "API Key",
+                    "Anthropic API key",
                     type="password",
                     placeholder="sk-ant-...",
-                    label_visibility="collapsed",
                     key="api_key_input",
                 )
-                if st.button("💾 Save API key", key="save_key"):
+                if st.button("Save key", key="save_key", type="primary"):
                     if new_key.startswith("sk-ant-"):
                         save_api_key(new_key)
                         config.anthropic_api_key = new_key
-                        st.success("✅ API key saved — click Init to connect")
                         st.rerun()
                     else:
                         st.error("Key must start with sk-ant-")
-                st.caption("Get your key at console.anthropic.com")
+                st.caption("[Get your key →](https://console.anthropic.com)")
 
-            # ── Cost display ───────────────────────────────────────────
             if has_key and rag._initialized:
                 m = rag.metrics
                 st.markdown(
@@ -1063,39 +1371,11 @@ def run_ui():
                     f'</span>',
                     unsafe_allow_html=True,
                 )
-                if m.total_queries:
-                    st.caption(f"Avg cost/query: ${m.total_cost / m.total_queries:.5f}")
 
         st.markdown("---")
 
-        st.markdown("**📂 Documents**")
+        # ── Knowledge base ────────────────────────────────────────────
         files = collect_files(config.docs_path)
-        if files:
-            st.success(f"{len(files)} file(s) loaded")
-            with st.expander("View files"):
-                for f in files:
-                    st.text(f"📄 {f.name}")
-        else:
-            st.warning("No documents found in docs/")
-
-        with st.expander("ℹ️ When to use each button"):
-            st.markdown("""
-**🚀 Init** — Every visit. Connects to existing index, no re-indexing.
-
-**⚡ Smart** — After adding/changing documents. Processes only new/changed files.
-
-**🔄 Full** — First time setup or full re-index from scratch.
-            """)
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            init_btn    = st.button("🚀 Init",  use_container_width=True)
-        with col2:
-            update_btn  = st.button("⚡ Smart", use_container_width=True)
-        with col3:
-            rebuild_btn = st.button("🔄 Full",  use_container_width=True)
-
-        # Check DB for indexed chunk count — works even before Init
         chunks_in_db = 0
         try:
             tmp_conn = psycopg2.connect(
@@ -1116,59 +1396,110 @@ def run_ui():
         except Exception as e:
             logger.warning(f"Sidebar DB check failed: {e}")
 
+        kb_status = "🟢 Ready" if (chunks_in_db > 0 and rag._initialized) else ("🟡 Not connected" if chunks_in_db > 0 else "🔴 Not indexed")
+        st.markdown(f'<p class="sidebar-section">Knowledge Base &nbsp; <span style="font-size:0.75rem;text-transform:none;font-weight:500;letter-spacing:0">{kb_status}</span></p>', unsafe_allow_html=True)
+
+        if files:
+            file_html = ""
+            for f in files:
+                ext = f.suffix.lower().lstrip(".")
+                icon = _file_icon(f.name)
+                file_html += f'''
+                <div class="file-item">
+                  <span>{icon}</span>
+                  <span class="file-name">{f.name}</span>
+                  <span class="file-ext ext-{ext}">{ext}</span>
+                </div>'''
+            with st.expander(f"📂 {len(files)} document{'s' if len(files)>1 else ''} · {chunks_in_db:,} chunks", expanded=False):
+                st.markdown(file_html, unsafe_allow_html=True)
+        else:
+            st.warning("No documents found")
+
+        # ── Change detection ──────────────────────────────────────────
         if chunks_in_db > 0:
-            # Compare current files against stored hashes — persists across restarts
-            # Use a standalone RAGSystem just for hash reading (no DB/embeddings needed)
             _rag_for_hash = rag if rag.vectorstore else RAGSystem()
             stored_hashes = _rag_for_hash._load_hash_store()
             if stored_hashes:
-                # Normalise stored paths to filename-only for comparison
                 stored_by_name = {Path(k).name: v for k, v in stored_hashes.items()}
-                new_or_changed = []
-                for f in files:
-                    current_hash = _rag_for_hash._get_file_hash(f)
-                    if stored_by_name.get(f.name) != current_hash:
-                        new_or_changed.append(f.name)
-                stored_names = set(Path(k).name for k in stored_hashes)
-                current_names = set(f.name for f in files)
-                deleted = stored_names - current_names
+                new_or_changed = [f.name for f in files if stored_by_name.get(f.name) != _rag_for_hash._get_file_hash(f)]
+                deleted = set(Path(k).name for k in stored_hashes) - set(f.name for f in files)
                 if new_or_changed or deleted:
-                    changed_list = ", ".join(list(new_or_changed)[:3])
-                    if len(new_or_changed) > 3:
-                        changed_list += f" +{len(new_or_changed)-3} more"
-                    st.warning(
-                        f"⚠️ {len(new_or_changed)} new/changed file(s) detected "
-                        f"({changed_list}) — click ⚡ Smart to update"
-                    )
-            else:
-                pass  # No hash store yet — index exists, assume up to date
+                    changed_list = ", ".join(list(new_or_changed)[:2])
+                    if len(new_or_changed) > 2:
+                        changed_list += f" +{len(new_or_changed)-2} more"
+                    st.warning(f"⚠️ {len(new_or_changed)} new/changed file(s) — click Refresh")
         elif files:
-            st.warning("⚠️ Documents not yet indexed — click Smart or Full")
+            st.warning("⚠️ Documents not indexed — click Build Index")
 
+        st.markdown("---")
+
+        # ── Action buttons ────────────────────────────────────────────
+        st.markdown('<p class="sidebar-section">Actions</p>', unsafe_allow_html=True)
+
+        if not rag._initialized:
+            init_btn = st.button("▶ Open Assistant", use_container_width=True, type="primary",
+                                  help="Connect to your document index and start chatting")
+        else:
+            init_btn = False
+
+        col1, col2 = st.columns(2)
+        with col1:
+            update_btn  = st.button("↻ Refresh", use_container_width=True,
+                                     help="Re-index new or changed documents only")
+        with col2:
+            rebuild_btn = st.button("⊕ Build Index", use_container_width=True,
+                                     help="Rebuild the entire document index from scratch")
+
+        st.markdown("---")
+
+        # ── Stats ─────────────────────────────────────────────────────
         if rag._initialized:
-            st.markdown("---")
-            st.markdown("**📊 Stats**")
             stats = rag.get_stats()
-            c1, c2 = st.columns(2)
-            c1.metric("Chunks", stats["chunks_indexed"])
-            c2.metric("Cache",  stats["cache_size"])
-            st.caption(f"Last indexed: {stats['last_indexed']}")
-            if st.button("🗑️ Clear cache", use_container_width=True):
-                rag._query_cache.clear()
-                st.success("Cache cleared")
+            with st.expander("📊 Activity", expanded=False):
+                st.markdown(f'''
+                <div class="stats-grid">
+                  <div class="stat-card">
+                    <div class="stat-val">{stats["chunks_indexed"]}</div>
+                    <div class="stat-lbl">Chunks</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-val">{stats["documents_found"]}</div>
+                    <div class="stat-lbl">Docs</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-val">{stats["session_queries"]}</div>
+                    <div class="stat-lbl">Questions</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-val">{stats["cache_size"]}</div>
+                    <div class="stat-lbl">Cached</div>
+                  </div>
+                </div>
+                ''', unsafe_allow_html=True)
+                st.caption(f"Last indexed: {stats['last_indexed']}")
+                if st.button("Clear cache", use_container_width=True):
+                    rag._query_cache.clear()
+                    st.success("Cache cleared")
 
-        if rag._initialized and suggested:
-            st.markdown("---")
-            st.markdown("**💡 Suggested questions**")
-            max_q = ui_cfg.get("max_suggested_questions", 5)
-            for i, q in enumerate(suggested[:max_q]):
-                if st.button(q, key=f"sq_{i}", use_container_width=True):
-                    st.session_state["pending_question"] = q
-                    st.rerun()
+        # Suggested questions shown in main chat area — not duplicated in sidebar
 
-    # ── Init / Rebuild ────────────────────────────────────────────────
+        # ── Trust signals ─────────────────────────────────────────────
+        st.markdown('''
+        <div style="padding:10px 0 4px">
+          <div style="font-size:0.75rem;color:#64748B;line-height:1.8">
+            <div>✓ &nbsp;Documents stay on your server</div>
+            <div>✓ &nbsp;Powered by Claude AI</div>
+            <div>✓ &nbsp;Your data is never used for training</div>
+          </div>
+          <div style="font-size:0.7rem;color:#94A3B8;margin-top:8px">
+            Powered by <strong>WeldAI</strong> · weldai.uk
+          </div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    # ── Init / Rebuild handler ────────────────────────────────────────
     if init_btn or rebuild_btn or update_btn:
-        rebuild_mode = "incremental" if update_btn else rebuild_btn
+        rebuild_mode = "incremental" if update_btn else (True if rebuild_btn else False)
         progress_bar = st.progress(0.0)
         status_txt   = st.empty()
 
@@ -1176,84 +1507,89 @@ def run_ui():
             progress_bar.progress(min(frac, 1.0))
             status_txt.text(msg)
 
-        with st.spinner("Working — this may take a minute for large document sets..."):
+        with st.spinner("Building your knowledge base..."):
             ok = rag.setup(rebuild=rebuild_mode, progress_cb=on_progress)
 
         progress_bar.empty()
         status_txt.empty()
         if ok:
-            st.success("✅ Ready!")
+            st.success("✅ Knowledge base ready — start asking questions!")
             st.rerun()
         else:
-            st.error("❌ Initialisation failed. Check logs.")
+            st.error("❌ Setup failed. Check that your API key is valid and documents are readable.")
 
-    # ── Not yet initialised — guide user to next step ────────────────
+    # ── Not yet initialised — guide user ─────────────────────────────
     if not rag._initialized:
-        st.markdown(f"""
-        <div class="brand-header">
-            <h1>{company}</h1>
-            <p>{tagline}</p>
-        </div>
-        """, unsafe_allow_html=True)
-
         fresh_key = os.getenv("ANTHROPIC_API_KEY", "") or load_saved_api_key()
 
-        # ── Step 1: No API key ─────────────────────────────────────────
         if not fresh_key:
-            st.error(
-                "### Step 1 — Enter your API key\n\n"
-                "Open **⚙️ Configuration** in the sidebar, enter your Anthropic API key "
-                "and click **💾 Save API key**.\n\n"
-                "Get your key at [console.anthropic.com](https://console.anthropic.com)"
-            )
+            st.markdown(f'''
+            <div class="welcome-hero">
+              <div class="welcome-icon">🔑</div>
+              <h2>Welcome to {company}</h2>
+              <p>{tagline}</p>
+            </div>''', unsafe_allow_html=True)
+            st.markdown('''<div class="step-card">
+              <div class="step-number">1</div>
+              <h3>Connect your AI</h3>
+              <p>Open <strong>⚙️ Configuration</strong> in the sidebar and enter your Anthropic API key.
+              Get your key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a></p>
+            </div>''', unsafe_allow_html=True)
             return
 
-        # ── Step 2: No documents ───────────────────────────────────────
         if not files:
-            st.warning(
-                "### Step 2 — Add your documents\n\n"
-                "Copy your PDF, Word, or Excel files into the docs folder on the server, "
-                "then refresh this page."
-            )
-            st.markdown("**Supported:** PDF · DOCX · PPTX · TXT · XLSX · CSV · DOC · PPT · XLS · RTF")
+            st.markdown(f'''
+            <div class="welcome-hero">
+              <div class="welcome-icon">📂</div>
+              <h2>Add your documents</h2>
+              <p>Copy your business documents into the docs folder on the server, then refresh this page.</p>
+            </div>''', unsafe_allow_html=True)
+            st.markdown('''<div class="step-card">
+              <div class="step-number">2</div>
+              <h3>Load your knowledge base</h3>
+              <p>Supported: <strong>PDF · Word · Excel · PowerPoint · CSV · Text</strong></p>
+            </div>''', unsafe_allow_html=True)
             return
 
-        # ── Step 3: Has key + docs but not initialised ─────────────────
-        # Check if index already exists
-        _chunks = 0
-        try:
-            _c = psycopg2.connect(
-                host=config.db_host, port=int(config.db_port),
-                dbname=config.db_name, user=config.db_user,
-                password=config.db_password,
-            )
-            _cur = _c.cursor()
-            _cur.execute(
-                "SELECT COUNT(*) FROM langchain_pg_embedding e "
-                "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
-                "WHERE c.name = %s", (config.collection_name,)
-            )
-            _chunks = _cur.fetchone()[0]
-            _c.close()
-        except Exception:
-            pass
+        # Has key + docs — check if indexed
+        _chunks2 = chunks_in_db  # already computed above in sidebar
+        example_qs = suggested[:4] if suggested else [
+            "What does this document cover?",
+            "Summarise the key points",
+            "What are the main steps?",
+            "List the key findings",
+        ]
+        cards = "".join([f'<div class="example-card">💬 {q}</div>' for q in example_qs])
 
-        if _chunks > 0:
-            st.info(
-                f"### ▶ Click **🚀 Init** to connect\n\n"
-                f"Your document index is ready ({_chunks} chunks from {len(files)} file(s)). "
-                f"Click **🚀 Init** in the sidebar to connect and start chatting."
-            )
+        if _chunks2 > 0:
+            st.markdown(f'''
+            <div class="welcome-hero" style="padding-top:1.5rem">
+              <div class="welcome-icon">🔍</div>
+              <h2>Ready to search</h2>
+              <p style="margin-bottom:0.5rem">{_chunks2:,} knowledge chunks · {len(files)} documents · {tagline}</p>
+              <div class="example-grid">{cards}</div>
+            </div>''', unsafe_allow_html=True)
+            st.markdown('''<div class="step-card" style="max-width:480px;margin:1rem auto">
+              <div class="step-number">▶</div>
+              <h3>Click "Open Assistant" to start chatting</h3>
+              <p>Press the <strong>▶ Open Assistant</strong> button in the sidebar.</p>
+            </div>''', unsafe_allow_html=True)
         else:
-            st.info(
-                f"### ▶ Click **🔄 Full** to index your documents\n\n"
-                f"{len(files)} document(s) found but not yet indexed. "
-                f"Click **🔄 Full** in the sidebar to index them. "
-                f"This takes about 1 minute for a typical document set."
-            )
-        st.markdown("**Supported:** PDF · DOCX · PPTX · TXT · XLSX · CSV · DOC · PPT · XLS · RTF")
+            st.markdown(f'''
+            <div class="welcome-hero" style="padding-top:1.5rem">
+              <div class="welcome-icon">⚡</div>
+              <h2>{len(files)} document(s) ready to index</h2>
+              <p>Your files are loaded. Build the index once and you can ask questions in seconds.</p>
+              <div class="example-grid">{cards}</div>
+            </div>''', unsafe_allow_html=True)
+            st.markdown('''<div class="step-card" style="max-width:480px;margin:1rem auto">
+              <div class="step-number">▶</div>
+              <h3>Click "Build Index" to get started</h3>
+              <p>Press <strong>⊕ Build Index</strong> in the sidebar. Takes about 1 minute for a typical document set.</p>
+            </div>''', unsafe_allow_html=True)
         return
 
+    # ── Main tabs ─────────────────────────────────────────────────────
     tab_chat, tab_search, tab_about = st.tabs(["💬 Chat", "🔎 Search", "ℹ️ About"])
 
     # ── Chat ─────────────────────────────────────────────────────────
@@ -1263,7 +1599,38 @@ def run_ui():
 
         pending = st.session_state.pop("pending_question", None)
 
-        if prompt := st.chat_input(f"Ask {assistant_name} a question..."):
+        # ── Empty state ────────────────────────────────────────────────
+        if not st.session_state.messages and not pending:
+            stats2 = rag.get_stats()
+            example_qs2 = suggested[:4] if suggested else [
+                "What does this document cover?",
+                "Summarise the key points",
+                "What are the main steps?",
+                "List the key findings",
+            ]
+            cards2 = "".join([
+                f'<div class="example-card" onclick="void(0)">💬 {q}</div>'
+                for q in example_qs2
+            ])
+            st.markdown(f'''
+            <div style="max-width:580px;margin:0.25rem auto 0.25rem;text-align:center;padding:0 0.5rem">
+              <p style="font-size:0.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+                color:var(--ink-light);margin:0 0 0.3rem">
+                {stats2["chunks_indexed"]:,} chunks &nbsp;·&nbsp; {stats2["documents_found"]} documents &nbsp;·&nbsp;
+                <span style="color:#059669">🟢 Ready</span>
+              </p>
+              <h2 style="font-size:1.1rem;font-weight:700;color:var(--ink);
+                letter-spacing:-0.02em;margin:0 0 0.2rem">
+                Ask anything about your documents
+              </h2>
+              <p style="font-size:0.8rem;color:var(--ink-mid);margin:0 0 0.5rem;line-height:1.4">
+                Instant answers with exact source and page number cited.
+              </p>
+              <div class="example-grid">{cards2}</div>
+            </div>
+            ''', unsafe_allow_html=True)
+
+        if prompt := st.chat_input(f"Ask {assistant_name} anything about your documents..."):
             _handle_question(rag, prompt, cfg)
             st.rerun()
 
@@ -1302,28 +1669,49 @@ def run_ui():
 
     # ── Search ────────────────────────────────────────────────────────
     with tab_search:
-        st.subheader("Search document chunks directly (no LLM)")
-        query = st.text_input("Search query")
+        st.markdown("##### 🔎 Direct document search")
+        st.caption("Search your document index directly — useful for checking what's been indexed or finding specific passages.")
+        query = st.text_input("Search query", placeholder="e.g. refund policy, safety procedures, invoice terms...")
         k = st.slider("Number of results", 1, 10, 4)
-        if st.button("🔎 Search") and query:
+        if st.button("Search documents", type="primary") and query:
             with st.spinner("Searching..."):
                 docs = rag.vectorstore.similarity_search(query, k=k)
+            st.caption(f"Found {len(docs)} matching passages")
             for i, doc in enumerate(docs, 1):
                 src   = Path(doc.metadata.get("source", "unknown")).name
                 page  = doc.metadata.get("page", "")
-                label = f"{src} p.{int(page)+1}" if page != "" else src
-                with st.expander(f"Result {i} — {label}"):
-                    st.text(doc.page_content)
+                label = f"{src} — p.{int(page)+1}" if page != "" else src
+                icon  = _file_icon(src)
+                with st.expander(f"{icon} {label}"):
+                    st.markdown(f'''<div style="font-size:0.88rem;line-height:1.6;color:#334155;
+                        background:#F8FAFC;padding:12px;border-radius:8px;border:1px solid #E2E8F0">
+                        {doc.page_content.replace(chr(10), "<br>")}
+                        </div>''', unsafe_allow_html=True)
 
     # ── About ─────────────────────────────────────────────────────────
     with tab_about:
-        st.subheader(f"About {company} — {assistant_name}")
-        st.markdown(f"""
-**LLM:** Claude API (`{config.claude_model}`)
-**Embeddings:** `{config.embedding_model}` (local via fastembed)
-**Supported formats:** PDF · DOCX · PPTX · TXT · XLSX · CSV
-        """)
-        st.json(rag.get_stats())
+        stats3 = rag.get_stats()
+        st.markdown(f"##### About {company}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"""
+**Product:** {assistant_name}
+**AI Model:** Claude API (`{config.claude_model}`)
+**Embeddings:** Local (fastembed — no API cost)
+**Vector store:** PostgreSQL + pgvector
+            """)
+        with col2:
+            st.markdown(f"""
+**Documents:** {stats3["documents_found"]} files
+**Index size:** {stats3["chunks_indexed"]:,} chunks
+**Last indexed:** {stats3["last_indexed"]}
+**Session queries:** {stats3["session_queries"]}
+            """)
+        st.markdown("---")
+        st.markdown("**Supported document formats**")
+        st.markdown("PDF · Word (.docx .doc) · PowerPoint (.pptx .ppt) · Excel (.xlsx .xls) · CSV · Plain text · RTF")
+        with st.expander("Technical details"):
+            st.json(stats3)
 
 
 # ─────────────────────────────────────────────

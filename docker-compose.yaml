@@ -32,7 +32,8 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - ./docs:/app/docs
+      #- ./docs:/app/docs
+      - C:\Users\jamesw\Documents\rag-claude-docs:/app/docs
       - ./config.yaml:/app/config.yaml:ro
     env_file:
       - .env
