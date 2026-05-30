@@ -632,6 +632,7 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [activeTab, setActiveTab] = useState('chat')
+  const [historyLoaded, setHistoryLoaded] = useState(false)
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
   const cancelRef = useRef(null)
@@ -639,6 +640,27 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Load chat history from backend on mount
+  useEffect(() => {
+    if (!status?.initialized || historyLoaded) return
+    api.get(`/api/history/${SESSION_ID}?limit=100`).then(data => {
+      if (data.messages?.length > 0) {
+        const loaded = data.messages.map((m, i) => ({
+          id: i,
+          role: m.role,
+          content: m.content,
+          sources: m.sources || [],
+          elapsed: m.elapsed,
+          cached: m.cached,
+          streaming: false,
+          status: false,
+        }))
+        setMessages(loaded)
+      }
+      setHistoryLoaded(true)
+    }).catch(() => setHistoryLoaded(true))
+  }, [status?.initialized, historyLoaded])
 
   const handleQuestion = useCallback((question) => {
     if (!question.trim() || streaming) return
