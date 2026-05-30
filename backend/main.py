@@ -127,15 +127,21 @@ def setup(req: SetupRequest):
             with lock:
                 events.append({"progress": round(frac, 3), "message": msg})
 
+        last_message = [""]
+
+        def progress_cb_with_capture(frac: float, msg: str):
+            last_message[0] = msg
+            progress_cb(frac, msg)
+
         def run():
             rebuild = (
                 "incremental" if req.mode == "incremental"
                 else True if req.mode == "full"
                 else False
             )
-            ok = rag.setup(rebuild=rebuild, progress_cb=progress_cb)
+            ok = rag.setup(rebuild=rebuild, progress_cb=progress_cb_with_capture)
             with lock:
-                events.append({"done": True, "ok": ok})
+                events.append({"done": True, "ok": ok, "message": last_message[0]})
 
         t = threading.Thread(target=run, daemon=True)
         t.start()

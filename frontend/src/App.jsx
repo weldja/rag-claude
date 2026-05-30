@@ -378,6 +378,20 @@ function WelcomeScreen({ status, cfg, accent, onQuestion, onSetup, setupState })
 
 function SetupProgress({ setupState, accent }) {
   const pct = Math.round(setupState.progress * 100)
+
+  // Error state
+  if (setupState.error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-left shadow-sm w-full max-w-md mx-auto">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-red-500 text-lg">⚠️</span>
+          <span className="text-sm font-semibold text-red-700">Setup failed</span>
+        </div>
+        <p className="text-sm text-red-600">{setupState.error}</p>
+      </div>
+    )
+  }
+
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-4 text-left shadow-sm w-full max-w-md mx-auto">
       <div className="flex items-center justify-between mb-3">
@@ -1065,14 +1079,27 @@ export default function App() {
   }, [fetchStatus])
 
   const handleSetup = useCallback((mode) => {
-    setSetupState({ progress: 0, message: 'Starting...' })
+    setSetupState({ progress: 0, message: 'Starting...', error: null })
     streamSSE('/api/setup', { mode }, (ev) => {
       if (ev.progress !== undefined) {
-        setSetupState({ progress: ev.progress, message: ev.message || '' })
+        setSetupState(s => ({ ...s, progress: ev.progress, message: ev.message || '' }))
       }
       if (ev.done) {
-        setSetupState(null)
-        fetchStatus()
+        if (!ev.ok) {
+          // Detect specific error types from the message
+          const msg = ev.message || ''
+          const isAuthError = msg.toLowerCase().includes('invalid') && msg.toLowerCase().includes('api')
+          setSetupState({
+            progress: 1,
+            message: msg,
+            error: isAuthError
+              ? 'API key is invalid or expired. Please remove your current key and enter a new one in ⚙️ Configuration.'
+              : 'Setup failed. Check that your API key is valid and documents are readable.',
+          })
+        } else {
+          setSetupState(null)
+          fetchStatus()
+        }
       }
     })
   }, [fetchStatus])
