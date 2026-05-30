@@ -8,6 +8,7 @@ LLM         : Anthropic Claude API    (real streaming + token tracking)
 
 import contextlib
 import os
+import threading
 import sys
 import time
 import hashlib
@@ -1065,6 +1066,7 @@ def run_ui():
 
     # ── Init / Rebuild ────────────────────────────────────────────────
     if init_btn or rebuild_btn or update_btn:
+        rebuild_mode = "incremental" if update_btn else rebuild_btn
         progress_bar = st.progress(0.0)
         status_txt   = st.empty()
 
@@ -1072,9 +1074,9 @@ def run_ui():
             progress_bar.progress(min(frac, 1.0))
             status_txt.text(msg)
 
-        rebuild_mode = "incremental" if update_btn else rebuild_btn
-        ok = rag.setup(rebuild=rebuild_mode, progress_cb=on_progress)
-        time.sleep(0.3)
+        with st.spinner("Working — this may take a minute for large document sets..."):
+            ok = rag.setup(rebuild=rebuild_mode, progress_cb=on_progress)
+
         progress_bar.empty()
         status_txt.empty()
         if ok:
