@@ -1020,7 +1020,7 @@ def run_ui():
         with col3:
             rebuild_btn = st.button("🔄 Full",  use_container_width=True)
 
-        # Check if index has data — more reliable than file timestamps
+        # Check DB for indexed chunk count
         chunks_in_db = 0
         if rag.vectorstore:
             try:
@@ -1035,11 +1035,31 @@ def run_ui():
                     chunks_in_db = cur.fetchone()[0]
             except Exception:
                 pass
+
         if chunks_in_db > 0:
-            if rag.last_indexed:
-                new_files = [f for f in files if f.stat().st_mtime > rag.last_indexed.timestamp()]
-                if new_files:
-                    st.warning(f"⚠️ {len(new_files)} new/changed file(s) — click Smart")
+            # Compare current files against stored hashes — persists across restarts
+            stored_hashes = rag._load_hash_store()
+            if stored_hashes:
+                # Normalise stored paths to filename-only for comparison
+                stored_by_name = {Path(k).name: v for k, v in stored_hashes.items()}
+                new_or_changed = []
+                for f in files:
+                    current_hash = rag._get_file_hash(f)
+                    if stored_by_name.get(f.name) != current_hash:
+                        new_or_changed.append(f.name)
+                stored_names = set(Path(k).name for k in stored_hashes)
+                current_names = set(f.name for f in files)
+                deleted = stored_names - current_names
+                if new_or_changed or deleted:
+                    changed_list = ", ".join(list(new_or_changed)[:3])
+                    if len(new_or_changed) > 3:
+                        changed_list += f" +{len(new_or_changed)-3} more"
+                    st.warning(
+                        f"⚠️ {len(new_or_changed)} new/changed file(s) detected "
+                        f"({changed_list}) — click ⚡ Smart to update"
+                    )
+            else:
+                pass  # No hash store yet — index exists, assume up to date
         elif files:
             st.warning("⚠️ Documents not yet indexed — click Smart or Full")
 
