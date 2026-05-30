@@ -265,6 +265,27 @@ def _convert_legacy_office(filepath: Path) -> Optional[Path]:
     return None
 
 
+def _is_toc_chunk(text: str, page: int = 999) -> bool:
+    """Detect table of contents chunks.
+    Two signals:
+    1. Chunk is from an early page (0-2) AND contains dotted leader lines (.... 31)
+    2. More than 40% of lines match TOC pattern regardless of page
+    """
+    import re
+    # TOC leader pattern: text followed by dots then page number
+    toc_pattern = re.compile(r'.{5,}[.\s]{3,}\d+\s*$')
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if len(lines) < 2:
+        return False
+    toc_lines = sum(1 for l in lines if toc_pattern.match(l))
+    ratio = toc_lines / len(lines)
+    # Early pages with any TOC lines — skip
+    if page <= 2 and toc_lines >= 2:
+        return True
+    # Any page with majority TOC lines — skip
+    return ratio > 0.4
+
+
 def collect_files(docs_path: str) -> List[Path]:
     root = Path(docs_path)
     if not root.exists():
@@ -427,13 +448,13 @@ class RAGSystem:
         except anthropic.AuthenticationError:
             raise ValueError("ANTHROPIC_API_KEY is invalid.")
         retrieve_k = self.cfg.retrieval_k
-        # MMR diversifies results — prevents all chunks coming from same document section
+        # MMR with high lambda — mostly relevance, slight diversity to avoid TOC clustering
         self.retriever = self.vectorstore.as_retriever(
             search_type="mmr",
             search_kwargs={
                 "k": retrieve_k,
-                "fetch_k": retrieve_k * 3,  # fetch more, then diversify
-                "lambda_mult": 0.7,          # 0=max diversity, 1=max relevance
+                "fetch_k": retrieve_k * 4,  # fetch more candidates
+                "lambda_mult": 0.9,          # 0=max diversity, 1=max relevance — keep high
             },
         )
         self._initialized = True
@@ -520,17 +541,24 @@ class RAGSystem:
             _cb(progress_cb, frac, f"Reading {fp.name} ({i+1}/{len(files_to_index)})...")
             docs = load_document(fp)
             chunks = splitter.split_documents(docs)
+            filtered = []
+            skipped_toc = 0
             for chunk in chunks:
+                page_num = chunk.metadata.get("page", 999)
+                if _is_toc_chunk(chunk.page_content, page=int(page_num) if page_num != "" else 999):
+                    skipped_toc += 1
+                    continue
                 source = Path(chunk.metadata.get("source", fp.name)).name
                 page = chunk.metadata.get("page", "")
                 page_str = f" | Page {int(page)+1}" if page != "" else ""
                 chunk.page_content = f"[{source}{page_str}] " + chunk.page_content
-            all_chunks.extend(chunks)
-            logger.info(f"  {fp.name}: {len(docs)} pages → {len(chunks)} chunks")
+                filtered.append(chunk)
+            all_chunks.extend(filtered)
+            logger.info(f"  {fp.name}: {len(docs)} pages → {len(filtered)} chunks (skipped {skipped_toc} TOC chunks)")
 
         _cb(progress_cb, progress_offset + 0.60, f"Embedding {len(all_chunks)} chunks...")
 
-        EMBED_BATCH = 32
+        EMBED_BATCH = 64  # increased from 32 — ~2x faster on 8GB+ RAM
         if not incremental:
             try:
                 PGVector(
