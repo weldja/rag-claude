@@ -901,17 +901,32 @@ function SearchPanel({ accent }) {
           ) : 'Search'}
         </button>
       </div>
-      {results?.map((r, i) => (
-        <details key={i} className="mb-2 bg-white border border-slate-200 rounded-xl overflow-hidden">
-          <summary className="px-4 py-3 cursor-pointer text-sm font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <span>{r.icon || '📄'}</span>
-            <span>{r.display_name}</span>
-          </summary>
-          <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 leading-relaxed">
-            {r.content}
-          </div>
-        </details>
-      ))}
+      {results?.map((r, i) => {
+        // Strip the [filename | Page X] prefix added during indexing
+        const cleanContent = r.content.replace(/^\[.*?\]\s*/, '')
+        // Extract just the filename from display_name for the download link
+        const filename = r.display_name.split(' p.')[0]
+        return (
+          <details key={i} className="mb-2 bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <summary className="px-4 py-3 cursor-pointer text-sm font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2 list-none">
+              <span>{r.icon || '📄'}</span>
+              <span className="flex-1">{r.display_name}</span>
+              <a
+                href={`/api/docs/${encodeURIComponent(filename)}`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={e => e.stopPropagation()}
+                className="text-xs px-2 py-0.5 rounded border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-300 transition-colors"
+              >
+                Open ↗
+              </a>
+            </summary>
+            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 leading-relaxed whitespace-pre-wrap">
+              {cleanContent}
+            </div>
+          </details>
+        )
+      })}
       {results !== null && results.length === 0 && (
         <div className="text-center py-12">
           <p className="text-2xl mb-2">🔍</p>

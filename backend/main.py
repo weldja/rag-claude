@@ -234,6 +234,29 @@ def startup():
             time.sleep(2)
 
 
+# ── File serving ─────────────────────────────────────────────────────────────
+
+from fastapi.responses import FileResponse
+import urllib.parse
+
+@app.get("/api/docs/{filename:path}")
+def serve_doc(filename: str):
+    """Serve a document file from the docs folder."""
+    filename = urllib.parse.unquote(filename)
+    # Security: only allow files within docs_path, no path traversal
+    docs_path = Path(_config.docs_path)
+    file_path = (docs_path / filename).resolve()
+    if not str(file_path).startswith(str(docs_path.resolve())):
+        raise HTTPException(403, "Access denied")
+    if not file_path.exists():
+        raise HTTPException(404, f"File not found: {filename}")
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="application/octet-stream",
+    )
+
+
 class SearchRequest(BaseModel):
     query: str
     k: int = 6
