@@ -970,10 +970,26 @@ def run_ui():
         with col3:
             rebuild_btn = st.button("🔄 Full",  use_container_width=True)
 
-        if rag.last_indexed:
-            new_files = [f for f in files if f.stat().st_mtime > rag.last_indexed.timestamp()]
-            if new_files:
-                st.warning(f"⚠️ {len(new_files)} new/changed file(s) — click Smart")
+        # Check if index has data — more reliable than file timestamps
+        chunks_in_db = 0
+        if rag.vectorstore:
+            try:
+                with rag._db() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT COUNT(*) FROM langchain_pg_embedding e "
+                        "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
+                        "WHERE c.name = %s",
+                        (rag.cfg.collection_name,),
+                    )
+                    chunks_in_db = cur.fetchone()[0]
+            except Exception:
+                pass
+        if chunks_in_db > 0:
+            if rag.last_indexed:
+                new_files = [f for f in files if f.stat().st_mtime > rag.last_indexed.timestamp()]
+                if new_files:
+                    st.warning(f"⚠️ {len(new_files)} new/changed file(s) — click Smart")
         elif files:
             st.warning("⚠️ Documents not yet indexed — click Smart or Full")
 
