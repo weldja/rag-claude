@@ -1,5 +1,71 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
+// Simple markdown renderer — handles bold, italic, bullets, numbered lists, line breaks
+function Markdown({ text }) {
+  if (!text) return null
+  
+  const lines = text.split('\n')
+  const elements = []
+  let i = 0
+  
+  while (i < lines.length) {
+    const line = lines[i]
+    
+    // Numbered list
+    if (/^\d+\.\s/.test(line)) {
+      const items = []
+      while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
+        items.push(renderInline(lines[i].replace(/^\d+\.\s/, '')))
+        i++
+      }
+      elements.push(<ol key={i} className="list-decimal pl-5 my-1.5 space-y-1">{items.map((item, j) => <li key={j} className="text-sm leading-relaxed">{item}</li>)}</ol>)
+      continue
+    }
+    
+    // Bullet list
+    if (/^[-*]\s/.test(line)) {
+      const items = []
+      while (i < lines.length && /^[-*]\s/.test(lines[i])) {
+        items.push(renderInline(lines[i].replace(/^[-*]\s/, '')))
+        i++
+      }
+      elements.push(<ul key={i} className="list-disc pl-5 my-1.5 space-y-1">{items.map((item, j) => <li key={j} className="text-sm leading-relaxed">{item}</li>)}</ul>)
+      continue
+    }
+    
+    // Empty line — spacer
+    if (line.trim() === '') {
+      elements.push(<div key={i} className="h-1.5" />)
+      i++
+      continue
+    }
+    
+    // Normal paragraph
+    elements.push(<p key={i} className="text-sm leading-relaxed">{renderInline(line)}</p>)
+    i++
+  }
+  
+  return <div className="space-y-0.5">{elements}</div>
+}
+
+function renderInline(text) {
+  // Bold + italic, bold, italic, inline code
+  const parts = []
+  const regex = /\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`/g
+  let last = 0
+  let m
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    if (m[1]) parts.push(<strong key={m.index}><em>{m[1]}</em></strong>)
+    else if (m[2]) parts.push(<strong key={m.index} className="font-semibold text-slate-900">{m[2]}</strong>)
+    else if (m[3]) parts.push(<em key={m.index}>{m[3]}</em>)
+    else if (m[4]) parts.push(<code key={m.index} className="text-xs bg-slate-100 px-1 py-0.5 rounded font-mono">{m[4]}</code>)
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length > 0 ? parts : text
+}
+
 // ─────────────────────────────────────────────
 // API helpers
 // ─────────────────────────────────────────────
@@ -121,7 +187,7 @@ function MessageBubble({ msg, accent }) {
       <div className={`flex-1 ${isUser ? 'flex justify-end' : ''}`}>
         {isUser ? (
           <div
-            className="inline-block px-4 py-2.5 rounded-2xl rounded-tr-sm text-white text-sm leading-relaxed max-w-lg"
+            className="inline-block px-4 py-2.5 rounded-2xl rounded-tr-sm text-white text-sm leading-relaxed max-w-md shadow-sm"
             style={{ background: accent }}
           >
             {msg.content}
@@ -129,16 +195,17 @@ function MessageBubble({ msg, accent }) {
         ) : (
           <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm max-w-3xl">
             {msg.streaming ? (
-              <span className="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap">
-                {msg.content}<span className="cursor" />
-              </span>
+              <div className="text-slate-800">
+                <Markdown text={msg.content} />
+                <span className="cursor" />
+              </div>
             ) : msg.status ? (
               <span className="text-sm text-slate-400 flex items-center gap-2">
                 <Dots /> {msg.content}
               </span>
             ) : (
               <>
-                <p className="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap">{msg.content}</p>
+                <div className="text-slate-800"><Markdown text={msg.content} /></div>
                 <SourceCards sources={msg.sources} />
                 {(msg.cached || msg.elapsed) && (
                   <div className="flex gap-3 mt-2">
@@ -675,22 +742,23 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
           {/* Input bar */}
           {status?.initialized && (
             <div className="flex-shrink-0 p-3 bg-white border-t border-slate-200">
-              <div className="flex gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2 focus-within:border-slate-300 focus-within:shadow-sm transition-all">
+              <div className="flex gap-2 bg-white border-2 border-slate-200 rounded-2xl p-2 pl-4 focus-within:border-blue-300 transition-all shadow-sm"
+                   style={{ '--tw-border-opacity': 1 }}>
                 <input
                   ref={inputRef}
                   type="text"
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendInput()}
-                  placeholder={`Ask ${cfg?.branding?.assistant_name || 'Document Assistant'} anything about your documents...`}
-                  className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 focus:outline-none px-1"
+                  placeholder="Ask a question about your documents..."
+                  className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 focus:outline-none"
                   disabled={streaming}
                 />
                 <button
                   onClick={sendInput}
                   disabled={!input.trim() || streaming}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-white transition-all disabled:opacity-40"
-                  style={{ background: accent }}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center text-white transition-all disabled:opacity-30 hover:opacity-90 shadow-sm flex-shrink-0"
+                  style={{ background: input.trim() && !streaming ? accent : '#94A3B8' }}
                 >
                   {streaming ? (
                     <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -698,7 +766,7 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z"/>
                     </svg>
                   ) : (
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <line x1="22" y1="2" x2="11" y2="13"/>
                       <polygon points="22,2 15,22 11,13 2,9"/>
                     </svg>
@@ -737,7 +805,7 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
 
 function SearchPanel({ accent }) {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState(null)
+  const [results, setResults] = useState(null)  // null=not searched, []=no results
   const [loading, setLoading] = useState(false)
 
   const search = async () => {
@@ -767,11 +835,13 @@ function SearchPanel({ accent }) {
         />
         <button
           onClick={search}
-          disabled={loading || !query.trim()}
-          className="px-4 py-2 rounded-lg text-white text-sm font-medium disabled:opacity-40"
+          disabled={loading}
+          className="px-5 py-2 rounded-lg text-white text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-50 flex-shrink-0"
           style={{ background: accent }}
         >
-          {loading ? '...' : 'Search'}
+          {loading ? (
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />Searching</span>
+          ) : 'Search'}
         </button>
       </div>
       {results?.map((r, i) => (
@@ -785,8 +855,18 @@ function SearchPanel({ accent }) {
           </div>
         </details>
       ))}
-      {results?.length === 0 && (
-        <p className="text-sm text-slate-400">No results found.</p>
+      {results !== null && results.length === 0 && (
+        <div className="text-center py-12">
+          <p className="text-2xl mb-2">🔍</p>
+          <p className="text-sm text-slate-500 font-medium">No matching passages found</p>
+          <p className="text-xs text-slate-400 mt-1">Try different keywords or a broader search term</p>
+        </div>
+      )}
+      {results === null && !loading && (
+        <div className="text-center py-12 text-slate-300">
+          <p className="text-4xl mb-3">📚</p>
+          <p className="text-sm text-slate-400">Enter a search term to find passages in your documents</p>
+        </div>
       )}
     </div>
   )
