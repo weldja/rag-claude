@@ -305,14 +305,15 @@ def collect_files(docs_path: str) -> List[Path]:
 
 SYSTEM_PROMPT = """\
 You are a helpful AI assistant for business document search.
-Answer questions using ONLY the context provided.
-If the answer is not in the context, say: "I don't have enough information to answer that."
+You have access to document context AND the conversation history.
 
 Rules:
-- Read ALL context chunks before answering
+- Use the document context to answer questions
+- Use conversation history to understand follow-up questions — e.g. "the first one", "tell me more", "expand on that" refer to items from previous answers
+- When a follow-up refers to a previous answer, use the history to identify what was discussed, then find more detail in the context
 - Be concise and specific
 - Cite the source document name and page number where possible
-- Do not make up or infer information not in the context"""
+- Do not make up information not present in the context or conversation"""
 
 USER_PROMPT_TEMPLATE = "Context:\n{context}\n\nQuestion: {question}"
 
@@ -665,6 +666,9 @@ class RAGSystem:
             messages.append({"role": "user", "content": USER_PROMPT_TEMPLATE.format(
                 context=context, question=question
             )})
+            logger.info(f"History turns sent to Claude: {len(messages)-1}")
+            for i, m in enumerate(messages[:-1]):
+                logger.info(f"  [{i}] {m['role']}: {m['content'][:60]!r}")
 
             answer_buf = ""
             with self._claude.messages.stream(
