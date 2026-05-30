@@ -558,11 +558,13 @@ class RAGSystem:
 
     def _persist_timestamp(self):
         self.last_indexed = datetime.now()
-        try:
-            with open("/app/docs/.last_indexed", "w") as f:
-                f.write(self.last_indexed.isoformat())
-        except Exception:
-            pass
+        for path in ["/tmp/.last_indexed", "/app/docs/.last_indexed"]:
+            try:
+                with open(path, "w") as f:
+                    f.write(self.last_indexed.isoformat())
+                break
+            except Exception:
+                continue
 
     # ── Query cache ───────────────────────────────────────────────────
 
@@ -968,15 +970,10 @@ def run_ui():
         with col3:
             rebuild_btn = st.button("🔄 Full",  use_container_width=True)
 
-        ts_file = Path("/app/docs") / ".last_indexed"
-        if ts_file.exists():
-            try:
-                last_ts = datetime.fromisoformat(ts_file.read_text().strip())
-                new_files = [f for f in files if f.stat().st_mtime > last_ts.timestamp()]
-                if new_files:
-                    st.warning(f"⚠️ {len(new_files)} new/changed file(s) — click Smart")
-            except Exception:
-                pass
+        if rag.last_indexed:
+            new_files = [f for f in files if f.stat().st_mtime > rag.last_indexed.timestamp()]
+            if new_files:
+                st.warning(f"⚠️ {len(new_files)} new/changed file(s) — click Smart")
         elif files:
             st.warning("⚠️ Documents not yet indexed — click Smart or Full")
 
