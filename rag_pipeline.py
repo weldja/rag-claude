@@ -1020,31 +1020,38 @@ def run_ui():
         with col3:
             rebuild_btn = st.button("🔄 Full",  use_container_width=True)
 
-        # Check DB for indexed chunk count
+        # Check DB for indexed chunk count — works even before Init
         chunks_in_db = 0
-        if rag.vectorstore:
-            try:
-                with rag._db() as conn:
-                    cur = conn.cursor()
-                    cur.execute(
-                        "SELECT COUNT(*) FROM langchain_pg_embedding e "
-                        "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
-                        "WHERE c.name = %s",
-                        (rag.cfg.collection_name,),
-                    )
-                    chunks_in_db = cur.fetchone()[0]
-            except Exception:
-                pass
+        try:
+            tmp_conn = psycopg2.connect(
+                host=config.db_host, port=int(config.db_port),
+                dbname=config.db_name, user=config.db_user,
+                password=config.db_password,
+            )
+            cur = tmp_conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM langchain_pg_embedding e "
+                "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
+                "WHERE c.name = %s",
+                (config.collection_name,),
+            )
+            chunks_in_db = cur.fetchone()[0]
+            tmp_conn.close()
+            logger.info(f"Sidebar DB check: {chunks_in_db} chunks in collection '{config.collection_name}'")
+        except Exception as e:
+            logger.warning(f"Sidebar DB check failed: {e}")
 
         if chunks_in_db > 0:
             # Compare current files against stored hashes — persists across restarts
-            stored_hashes = rag._load_hash_store()
+            # Use a standalone RAGSystem just for hash reading (no DB/embeddings needed)
+            _rag_for_hash = rag if rag.vectorstore else RAGSystem()
+            stored_hashes = _rag_for_hash._load_hash_store()
             if stored_hashes:
                 # Normalise stored paths to filename-only for comparison
                 stored_by_name = {Path(k).name: v for k, v in stored_hashes.items()}
                 new_or_changed = []
                 for f in files:
-                    current_hash = rag._get_file_hash(f)
+                    current_hash = _rag_for_hash._get_file_hash(f)
                     if stored_by_name.get(f.name) != current_hash:
                         new_or_changed.append(f.name)
                 stored_names = set(Path(k).name for k in stored_hashes)
