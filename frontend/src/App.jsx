@@ -70,6 +70,38 @@ function renderInline(text) {
 // API helpers
 // ─────────────────────────────────────────────
 
+// Resizable sidebar hook
+function useResizable(defaultWidth = 256, minWidth = 180, maxWidth = 400) {
+  const [width, setWidth] = useState(() => {
+    const saved = localStorage.getItem('weldai_sidebar_width')
+    return saved ? parseInt(saved) : defaultWidth
+  })
+  const dragging = useRef(false)
+
+  const onMouseDown = useCallback((e) => {
+    e.preventDefault()
+    dragging.current = true
+    const startX = e.clientX
+    const startW = width
+
+    const onMove = (e) => {
+      if (!dragging.current) return
+      const newW = Math.min(maxWidth, Math.max(minWidth, startW + (e.clientX - startX)))
+      setWidth(newW)
+      localStorage.setItem('weldai_sidebar_width', newW)
+    }
+    const onUp = () => {
+      dragging.current = false
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [width, minWidth, maxWidth])
+
+  return { width, onMouseDown }
+}
+
 // Session ID — persists in localStorage across page refreshes
 function getSessionId() {
   let id = localStorage.getItem('weldai_session_id')
@@ -190,10 +222,10 @@ function MessageBubble({ msg, accent }) {
       {/* Avatar */}
       {!isUser && (
         <div
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5"
-          style={{ background: `linear-gradient(135deg, ${accent}, ${accent}cc)` }}
+          className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5 shadow-sm"
+          style={{ background: `linear-gradient(135deg, ${accent}, ${accent}99)` }}
         >
-          AI
+          ✦
         </div>
       )}
       <div className={`flex-1 ${isUser ? 'flex justify-end' : ''}`}>
@@ -205,7 +237,7 @@ function MessageBubble({ msg, accent }) {
             {msg.content}
           </div>
         ) : (
-          <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm max-w-3xl">
+          <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm max-w-3xl" style={{ borderLeft: `3px solid ${accent}` }}>
             {msg.streaming ? (
               <div className="text-slate-800">
                 <Markdown text={msg.content} />
@@ -412,7 +444,7 @@ function Sidebar({ status, cfg, accent, onSetup, setupState, onClearCache }) {
     : status?.chunks_in_db > 0 ? '🟡 Not connected' : '🔴 Not indexed'
 
   return (
-    <aside className="w-64 flex-shrink-0 flex flex-col border-r border-slate-200 bg-slate-50 h-screen overflow-y-auto">
+    <aside className="flex-1 flex flex-col border-slate-200 bg-slate-50 h-screen overflow-y-auto">
 
       {/* Brand header */}
       <div className="p-4 text-white flex-shrink-0"
@@ -580,7 +612,13 @@ function Sidebar({ status, cfg, accent, onSetup, setupState, onClearCache }) {
                 💰 ${status.stats.session_cost_usd.toFixed(4)} this session
               </div>
             )}
-            <p className="text-xs text-slate-400 mt-1">Last indexed: {status.stats.last_indexed}</p>
+            <p className="text-xs text-slate-400 mt-1">
+              {status.stats.last_indexed !== 'Never'
+                ? `Last indexed: ${status.stats.last_indexed}`
+                : status.stats.chunks_indexed > 0
+                  ? `${status.stats.chunks_indexed.toLocaleString()} chunks indexed`
+                  : 'Not yet indexed'}
+            </p>
             <button
               onClick={onClearCache}
               className="mt-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
@@ -771,7 +809,7 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
             {messages.length > 0 && historyLoaded && messages[0]?.id !== undefined && (
               <div className="flex justify-center py-2">
                 <span className="text-xs text-slate-300 bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
-                  ↑ Conversation history
+                  🕐 Restored from previous session
                 </span>
               </div>
             )}
@@ -834,9 +872,9 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
                       setHistoryLoaded(false)
                       api.del(`/api/history/${SESSION_ID}`)
                     }}
-                    className="text-xs text-slate-400 hover:text-red-500 transition-colors"
+                    className="text-xs px-3 py-1 rounded-lg border border-slate-200 text-slate-500 hover:border-red-300 hover:text-red-500 transition-colors"
                   >
-                    🗑️ New conversation
+                    + New conversation
                   </button>
                 </div>
               )}
@@ -1008,6 +1046,7 @@ export default function App() {
   const [cfg, setCfg] = useState(null)
   const [setupState, setSetupState] = useState(null)
   const accent = cfg?.branding?.accent_colour || '#185FA5'
+  const { width: sidebarWidth, onMouseDown: onResizerDown } = useResizable(256, 180, 420)
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -1063,14 +1102,22 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-white overflow-hidden">
-      <Sidebar
-        status={status}
-        cfg={cfg}
-        accent={accent}
-        onSetup={handleSetup}
-        setupState={setupState}
-        onClearCache={handleClearCache}
-      />
+      <div style={{ width: sidebarWidth, flexShrink: 0 }} className="flex">
+        <Sidebar
+          status={status}
+          cfg={cfg}
+          accent={accent}
+          onSetup={handleSetup}
+          setupState={setupState}
+          onClearCache={handleClearCache}
+        />
+        {/* Drag handle */}
+        <div
+          onMouseDown={onResizerDown}
+          className="w-1 cursor-col-resize bg-slate-200 hover:bg-blue-400 transition-colors flex-shrink-0 active:bg-blue-500"
+          title="Drag to resize"
+        />
+      </div>
       <ChatPanel
         status={status}
         cfg={cfg}
