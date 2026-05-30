@@ -832,7 +832,8 @@ class RAGSystem:
                     {
                         "role": r[0],
                         "content": r[1],
-                        "sources": json.loads(r[2]) if r[2] else [],
+                        # psycopg2 auto-deserialises JSONB — handle both list and string
+                        "sources": r[2] if isinstance(r[2], list) else (json.loads(r[2]) if r[2] else []),
                         "elapsed": r[3],
                         "cached": r[4],
                         "created_at": r[5].isoformat() if r[5] else None,
