@@ -673,11 +673,13 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
     let answerBuf = ''
     let msgId = Date.now() + 1
 
-    // Build history from current messages for context (last 12 = 6 exchanges)
-    const historyForApi = messages.slice(-12).map(m => ({
-      role: m.role,
-      content: m.content,
-    }))
+    // Build history from completed messages only (exclude status/streaming/error)
+    // Include current question as last user turn
+    const completedMessages = messages.filter(m => !m.status && !m.streaming && !m.error && m.content)
+    const historyForApi = [
+      ...completedMessages.slice(-10).map(m => ({ role: m.role, content: m.content })),
+      { role: 'user', content: question }
+    ]
 
     const cancel = streamSSE('/api/ask', {
       question,

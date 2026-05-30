@@ -652,12 +652,16 @@ class RAGSystem:
             yield {"type": "status", "data": "Generating answer..."}
             context = "\n\n".join(d.page_content for d in source_docs)
 
-            # Build messages array — prepend conversation history before current question
+            # Build messages array from history
+            # Frontend sends history including the current question as last item
+            # We replace the last user message with the RAG-augmented version
             messages = []
-            if history:
-                for turn in history[-12:]:  # max 6 exchanges = 12 messages
-                    if turn.get("role") in ("user", "assistant") and turn.get("content"):
-                        messages.append({"role": turn["role"], "content": turn["content"]})
+            if history and len(history) >= 1:
+                # Add all history except the last user message (we'll add RAG version)
+                prior = [h for h in history[:-1] if h.get("role") in ("user", "assistant") and h.get("content")]
+                for turn in prior[-10:]:
+                    messages.append({"role": turn["role"], "content": turn["content"]})
+            # Always end with the RAG-augmented current question
             messages.append({"role": "user", "content": USER_PROMPT_TEMPLATE.format(
                 context=context, question=question
             )})
