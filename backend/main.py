@@ -241,20 +241,22 @@ import urllib.parse
 
 @app.get("/api/docs/{filename:path}")
 def serve_doc(filename: str):
-    """Serve a document file from the docs folder."""
+    """Serve a document file from the docs folder — searches recursively."""
     filename = urllib.parse.unquote(filename)
-    # Security: only allow files within docs_path, no path traversal
-    docs_path = Path(_config.docs_path)
-    file_path = (docs_path / filename).resolve()
-    if not str(file_path).startswith(str(docs_path.resolve())):
-        raise HTTPException(403, "Access denied")
-    if not file_path.exists():
-        raise HTTPException(404, f"File not found: {filename}")
-    return FileResponse(
-        path=str(file_path),
-        filename=filename,
-        media_type="application/octet-stream",
-    )
+    docs_path = Path(_config.docs_path).resolve()
+
+    # Try direct path first
+    direct = (docs_path / filename).resolve()
+    if str(direct).startswith(str(docs_path)) and direct.exists():
+        return FileResponse(path=str(direct), filename=Path(filename).name)
+
+    # Search recursively by filename only
+    name_only = Path(filename).name
+    for found in docs_path.rglob(name_only):
+        if str(found.resolve()).startswith(str(docs_path)):
+            return FileResponse(path=str(found), filename=name_only)
+
+    raise HTTPException(404, f"File not found: {filename}")
 
 
 class SearchRequest(BaseModel):
