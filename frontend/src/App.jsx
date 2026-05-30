@@ -219,13 +219,16 @@ function WelcomeScreen({ status, cfg, accent, onQuestion, onSetup, setupState })
           {setupState ? (
             <SetupProgress setupState={setupState} accent={accent} />
           ) : (
-            <button
-              onClick={() => onSetup('full')}
-              className="w-full py-3 rounded-xl text-white font-semibold text-sm transition-all hover:opacity-90 shadow-md"
-              style={{ background: accent }}
-            >
-              ⊕ Build Index
-            </button>
+            <div className="flex flex-col gap-2 w-full max-w-xs mx-auto">
+              <button
+                onClick={() => onSetup('full')}
+                className="w-full py-3 rounded-xl text-white font-semibold text-sm transition-all hover:opacity-90 shadow-md"
+                style={{ background: accent }}
+              >
+                ⊕ Build Index
+              </button>
+              <p className="text-xs text-slate-400 text-center">Takes about 1 minute · Only needed once</p>
+            </div>
           )}
         </div>
       </div>
@@ -263,20 +266,28 @@ function WelcomeScreen({ status, cfg, accent, onQuestion, onSetup, setupState })
 }
 
 function SetupProgress({ setupState, accent }) {
+  const pct = Math.round(setupState.progress * 100)
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-4 text-left shadow-sm">
-      <div className="flex items-center gap-2 mb-3">
-        <Dots />
-        <span className="text-sm text-slate-600">{setupState.message}</span>
+    <div className="bg-white border border-slate-200 rounded-xl p-4 text-left shadow-sm w-full max-w-md mx-auto">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Dots />
+          <span className="text-sm text-slate-600">{setupState.message}</span>
+        </div>
+        <span className="text-xs font-semibold tabular-nums" style={{ color: accent }}>{pct}%</span>
       </div>
-      <div className="w-full bg-slate-100 rounded-full h-1.5">
+      <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
         <div
-          className="h-1.5 rounded-full transition-all duration-500"
-          style={{ width: `${Math.round(setupState.progress * 100)}%`, background: accent }}
+          className="h-2 rounded-full transition-all duration-700 ease-out"
+          style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${accent}cc, ${accent})` }}
         />
       </div>
-      <p className="text-xs text-slate-400 mt-1.5 text-right">
-        {Math.round(setupState.progress * 100)}%
+      <p className="text-xs text-slate-400 mt-2">
+        {pct < 20 ? "Loading AI models..." :
+         pct < 60 ? "Reading your documents..." :
+         pct < 82 ? "Building semantic index..." :
+         pct < 90 ? "Connecting to Claude AI..." :
+         "Almost ready..."}
       </p>
     </div>
   )
@@ -347,13 +358,13 @@ function Sidebar({ status, cfg, accent, onSetup, setupState, onClearCache }) {
             </div>
           )}
           {status?.key_source === 'saved' && (
-            <div>
-              <div className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1.5 mb-1.5">
+            <div className="flex flex-col gap-1.5">
+              <div className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1.5">
                 ✅ API key saved
               </div>
               <button onClick={removeKey}
-                className="text-xs text-slate-500 hover:text-red-600 transition-colors">
-                Remove key
+                className="text-xs text-left px-1 text-slate-400 hover:text-red-500 transition-colors">
+                Remove saved key
               </button>
             </div>
           )}
@@ -433,7 +444,11 @@ function Sidebar({ status, cfg, accent, onSetup, setupState, onClearCache }) {
         {/* Actions */}
         <SidebarSection title="Actions">
           {setupState ? (
-            <SetupProgress setupState={setupState} accent={accent} />
+            <div className="flex items-center gap-2 py-1.5">
+              <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: accent }} />
+              <span className="text-xs text-slate-500 truncate">{setupState.message}</span>
+              <span className="text-xs text-slate-400 ml-auto">{Math.round(setupState.progress * 100)}%</span>
+            </div>
           ) : (
             <div className="flex flex-col gap-1.5">
               {!status?.initialized && (
@@ -449,12 +464,14 @@ function Sidebar({ status, cfg, accent, onSetup, setupState, onClearCache }) {
                 <button
                   onClick={() => onSetup('incremental')}
                   className="py-1.5 rounded-lg text-xs font-medium border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors"
+                  title="Re-index only new or changed documents"
                 >
                   ↻ Refresh
                 </button>
                 <button
                   onClick={() => onSetup('full')}
                   className="py-1.5 rounded-lg text-xs font-medium border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors"
+                  title="Rebuild the entire document index from scratch"
                 >
                   ⊕ Build Index
                 </button>
@@ -600,14 +617,12 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
     cancelRef.current = cancel
   }, [streaming])
 
-  // Allow parent to trigger a question (from welcome cards)
+  // Allow example cards to trigger a question via custom event
   useEffect(() => {
-    if (onQuestion) {
-      const handler = (e) => handleQuestion(e.detail)
-      window.addEventListener('ask-question', handler)
-      return () => window.removeEventListener('ask-question', handler)
-    }
-  }, [handleQuestion, onQuestion])
+    const handler = (e) => handleQuestion(e.detail)
+    window.addEventListener('ask-question', handler)
+    return () => window.removeEventListener('ask-question', handler)
+  }, [handleQuestion])
 
   const sendInput = () => handleQuestion(input)
 

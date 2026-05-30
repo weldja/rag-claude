@@ -536,12 +536,13 @@ class RAGSystem:
                 )
             except Exception:
                 pass
-            for i in range(0, len(all_chunks), EMBED_BATCH):
+            total_batches = (len(all_chunks) - 1) // EMBED_BATCH + 1
+            for batch_num, i in enumerate(range(0, len(all_chunks), EMBED_BATCH)):
                 batch = all_chunks[i:i + EMBED_BATCH]
-                n = i // EMBED_BATCH + 1
-                total = (len(all_chunks) - 1) // EMBED_BATCH + 1
-                _cb(progress_cb, progress_offset + 0.60 + (0.20 * (i / max(len(all_chunks), 1))),
-                    f"Embedding batch {n}/{total}...")
+                batch_progress = batch_num / max(total_batches, 1)
+                _cb(progress_cb,
+                    progress_offset + 0.60 + (0.22 * batch_progress),
+                    f"Embedding batch {batch_num + 1}/{total_batches}...")
                 self.vectorstore.add_documents(batch)
             self._save_hash_store(current_hashes)
         else:
