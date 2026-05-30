@@ -102,6 +102,41 @@ def load_client_config() -> dict:
     return defaults
 
 
+
+# ─────────────────────────────────────────────
+# API key persistence (browser-entered key)
+# ─────────────────────────────────────────────
+
+API_KEY_FILE = "/app/.weldai_api_key"
+
+def load_saved_api_key() -> str:
+    """Load API key saved via the browser UI."""
+    try:
+        p = Path(API_KEY_FILE)
+        if p.exists():
+            key = p.read_text().strip()
+            if key.startswith("sk-ant-"):
+                return key
+    except Exception:
+        pass
+    return ""
+
+def save_api_key(key: str):
+    """Persist API key entered via browser to a local file."""
+    try:
+        Path(API_KEY_FILE).write_text(key.strip())
+    except Exception as e:
+        logger.warning(f"Could not save API key: {e}")
+
+def delete_api_key():
+    """Remove saved API key."""
+    try:
+        p = Path(API_KEY_FILE)
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
+
 # ─────────────────────────────────────────────
 # Claude pricing  ($ per million tokens)
 # ─────────────────────────────────────────────
@@ -138,7 +173,7 @@ class Config:
     retrieval_k: int       = field(default_factory=lambda: int(os.getenv("RETRIEVAL_K", "4")))
     reranker_model: str    = field(default_factory=lambda: os.getenv("RERANKER_MODEL", ""))
     reranker_top_n: int    = field(default_factory=lambda: int(os.getenv("RERANKER_TOP_N", "4")))
-    anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "") or load_saved_api_key())
     claude_model: str      = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001"))
     max_tokens: int        = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "1024")))
     temperature: float     = field(default_factory=lambda: float(os.getenv("TEMPERATURE", "0.1")))
@@ -974,13 +1009,48 @@ def run_ui():
         </div>
         """, unsafe_allow_html=True)
 
-        with st.expander("⚙️ Configuration"):
-            st.caption(f"**LLM:** Claude API")
+        with st.expander("⚙️ Configuration", expanded=not config.anthropic_api_key):
             st.caption(f"**Model:** `{config.claude_model}`")
             st.caption(f"**Embeddings:** `{config.embedding_model}` (local)")
-            if not config.anthropic_api_key:
-                st.warning("⚠️ ANTHROPIC_API_KEY not set")
-            elif rag._initialized:
+
+            # ── API key entry ──────────────────────────────────────────
+            saved_key = load_saved_api_key()
+            env_key   = os.getenv("ANTHROPIC_API_KEY", "")
+            has_key   = bool(env_key or saved_key)
+
+            if env_key:
+                st.success("✅ API key set via environment")
+            elif saved_key:
+                st.success("✅ API key saved")
+                if st.button("🗑️ Remove saved key", key="del_key"):
+                    delete_api_key()
+                    config.anthropic_api_key = ""
+                    if rag._initialized:
+                        rag._initialized = False
+                        rag._claude = None
+                    st.rerun()
+            else:
+                st.warning("⚠️ No API key configured")
+                st.markdown("**Enter your Anthropic API key:**")
+                new_key = st.text_input(
+                    "API Key",
+                    type="password",
+                    placeholder="sk-ant-...",
+                    label_visibility="collapsed",
+                    key="api_key_input",
+                )
+                if st.button("💾 Save API key", key="save_key"):
+                    if new_key.startswith("sk-ant-"):
+                        save_api_key(new_key)
+                        config.anthropic_api_key = new_key
+                        st.success("✅ API key saved — click Init to connect")
+                        st.rerun()
+                    else:
+                        st.error("Key must start with sk-ant-")
+                st.caption("Get your key at console.anthropic.com")
+
+            # ── Cost display ───────────────────────────────────────────
+            if has_key and rag._initialized:
                 m = rag.metrics
                 st.markdown(
                     f'<span class="cost-pill">'
@@ -1122,10 +1192,9 @@ def run_ui():
         """, unsafe_allow_html=True)
         st.markdown(ui_cfg.get("welcome_message", "Ask questions about your loaded documents."))
         if not config.anthropic_api_key:
-            st.error(
-                "**ANTHROPIC_API_KEY is not configured.**\n\n"
-                "Add it to your `.env` file:\n```\nANTHROPIC_API_KEY=sk-ant-...\n```\n"
-                "Then restart the container."
+            st.warning(
+                "**No API key configured.** "
+                "Open the ⚙️ Configuration panel in the sidebar to enter your Anthropic API key."
             )
         st.info("""
 | Button | When to use |
