@@ -1187,7 +1187,7 @@ def run_ui():
         else:
             st.error("❌ Initialisation failed. Check logs.")
 
-    # ── Not yet initialised ───────────────────────────────────────────
+    # ── Not yet initialised — guide user to next step ────────────────
     if not rag._initialized:
         st.markdown(f"""
         <div class="brand-header">
@@ -1195,19 +1195,62 @@ def run_ui():
             <p>{tagline}</p>
         </div>
         """, unsafe_allow_html=True)
-        st.markdown(ui_cfg.get("welcome_message", "Ask questions about your loaded documents."))
-        if not config.anthropic_api_key:
-            st.warning(
-                "**No API key configured.** "
-                "Open the ⚙️ Configuration panel in the sidebar to enter your Anthropic API key."
+
+        fresh_key = os.getenv("ANTHROPIC_API_KEY", "") or load_saved_api_key()
+
+        # ── Step 1: No API key ─────────────────────────────────────────
+        if not fresh_key:
+            st.error(
+                "### Step 1 — Enter your API key\n\n"
+                "Open **⚙️ Configuration** in the sidebar, enter your Anthropic API key "
+                "and click **💾 Save API key**.\n\n"
+                "Get your key at [console.anthropic.com](https://console.anthropic.com)"
             )
-        st.info("""
-| Button | When to use |
-|--------|-------------|
-| 🚀 **Init** | Every visit — connects to your existing index |
-| ⚡ **Smart** | After adding or changing documents |
-| 🔄 **Full** | First time setup, or full reset |
-        """)
+            return
+
+        # ── Step 2: No documents ───────────────────────────────────────
+        if not files:
+            st.warning(
+                "### Step 2 — Add your documents\n\n"
+                "Copy your PDF, Word, or Excel files into the docs folder on the server, "
+                "then refresh this page."
+            )
+            st.markdown("**Supported:** PDF · DOCX · PPTX · TXT · XLSX · CSV · DOC · PPT · XLS · RTF")
+            return
+
+        # ── Step 3: Has key + docs but not initialised ─────────────────
+        # Check if index already exists
+        _chunks = 0
+        try:
+            _c = psycopg2.connect(
+                host=config.db_host, port=int(config.db_port),
+                dbname=config.db_name, user=config.db_user,
+                password=config.db_password,
+            )
+            _cur = _c.cursor()
+            _cur.execute(
+                "SELECT COUNT(*) FROM langchain_pg_embedding e "
+                "JOIN langchain_pg_collection c ON e.collection_id = c.uuid "
+                "WHERE c.name = %s", (config.collection_name,)
+            )
+            _chunks = _cur.fetchone()[0]
+            _c.close()
+        except Exception:
+            pass
+
+        if _chunks > 0:
+            st.info(
+                f"### ▶ Click **🚀 Init** to connect\n\n"
+                f"Your document index is ready ({_chunks} chunks from {len(files)} file(s)). "
+                f"Click **🚀 Init** in the sidebar to connect and start chatting."
+            )
+        else:
+            st.info(
+                f"### ▶ Click **🔄 Full** to index your documents\n\n"
+                f"{len(files)} document(s) found but not yet indexed. "
+                f"Click **🔄 Full** in the sidebar to index them. "
+                f"This takes about 1 minute for a typical document set."
+            )
         st.markdown("**Supported:** PDF · DOCX · PPTX · TXT · XLSX · CSV · DOC · PPT · XLS · RTF")
         return
 
