@@ -594,8 +594,10 @@ class RAGSystem:
 
     # ── Ask (streaming generator) ─────────────────────────────────────
 
-    def ask_stream(self, question: str) -> Generator[Dict, None, None]:
-        """Yield SSE-compatible dicts: {type, data}"""
+    def ask_stream(self, question: str, history: Optional[List[Dict]] = None) -> Generator[Dict, None, None]:
+        """Yield SSE-compatible dicts: {type, data}
+        history: list of {role, content} dicts from previous exchanges (last N turns)
+        """
         if not self._initialized:
             yield {"type": "error", "data": "System not initialised."}
             return
@@ -617,15 +619,23 @@ class RAGSystem:
             yield {"type": "status", "data": "Generating answer..."}
             context = "\n\n".join(d.page_content for d in source_docs)
 
+            # Build messages array — prepend conversation history before current question
+            messages = []
+            if history:
+                for turn in history[-12:]:  # max 6 exchanges = 12 messages
+                    if turn.get("role") in ("user", "assistant") and turn.get("content"):
+                        messages.append({"role": turn["role"], "content": turn["content"]})
+            messages.append({"role": "user", "content": USER_PROMPT_TEMPLATE.format(
+                context=context, question=question
+            )})
+
             answer_buf = ""
             with self._claude.messages.stream(
                 model=self.cfg.claude_model,
                 max_tokens=self.cfg.max_tokens,
                 temperature=self.cfg.temperature,
                 system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": USER_PROMPT_TEMPLATE.format(
-                    context=context, question=question
-                )}],
+                messages=messages,
             ) as stream:
                 for text in stream.text_stream:
                     answer_buf += text
@@ -727,6 +737,110 @@ class RAGSystem:
 
     def clear_cache(self):
         self._query_cache.clear()
+
+    # ── Chat history ──────────────────────────────────────────────────
+
+    def ensure_history_table(self):
+        """Create chat_messages table if it doesn't exist."""
+        try:
+            with self._db() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS chat_messages (
+                        id SERIAL PRIMARY KEY,
+                        session_id VARCHAR(64) NOT NULL,
+                        role VARCHAR(16) NOT NULL,
+                        content TEXT NOT NULL,
+                        sources JSONB,
+                        elapsed FLOAT,
+                        cached BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+                    ON chat_messages(session_id, created_at)
+                """)
+        except Exception as e:
+            logger.warning(f"Could not create chat_messages table: {e}")
+
+    def save_message(self, session_id: str, role: str, content: str,
+                     sources: Optional[List] = None, elapsed: Optional[float] = None,
+                     cached: bool = False):
+        try:
+            with self._db() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO chat_messages (session_id, role, content, sources, elapsed, cached) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (session_id, role, content,
+                     json.dumps(sources) if sources else None,
+                     elapsed, cached)
+                )
+        except Exception as e:
+            logger.warning(f"Could not save message: {e}")
+
+    def get_history(self, session_id: str, limit: int = 50) -> List[Dict]:
+        try:
+            with self._db() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT role, content, sources, elapsed, cached, created_at "
+                    "FROM chat_messages WHERE session_id = %s "
+                    "ORDER BY created_at ASC LIMIT %s",
+                    (session_id, limit)
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "role": r[0],
+                        "content": r[1],
+                        "sources": json.loads(r[2]) if r[2] else [],
+                        "elapsed": r[3],
+                        "cached": r[4],
+                        "created_at": r[5].isoformat() if r[5] else None,
+                    }
+                    for r in rows
+                ]
+        except Exception as e:
+            logger.warning(f"Could not get history: {e}")
+            return []
+
+    def clear_history(self, session_id: str):
+        try:
+            with self._db() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM chat_messages WHERE session_id = %s", (session_id,))
+        except Exception as e:
+            logger.warning(f"Could not clear history: {e}")
+
+    def list_sessions(self) -> List[Dict]:
+        try:
+            with self._db() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT session_id,
+                           COUNT(*) FILTER (WHERE role='user') as questions,
+                           MIN(created_at) as started,
+                           MAX(created_at) as last_active
+                    FROM chat_messages
+                    GROUP BY session_id
+                    ORDER BY last_active DESC
+                    LIMIT 20
+                """)
+                rows = cur.fetchall()
+                return [
+                    {
+                        "session_id": r[0],
+                        "questions": r[1],
+                        "started": r[2].isoformat() if r[2] else None,
+                        "last_active": r[3].isoformat() if r[3] else None,
+                    }
+                    for r in rows
+                ]
+        except Exception as e:
+            logger.warning(f"Could not list sessions: {e}")
+            return []
 
 
 # ─────────────────────────────────────────────

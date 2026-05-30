@@ -70,6 +70,18 @@ function renderInline(text) {
 // API helpers
 // ─────────────────────────────────────────────
 
+// Session ID — persists in localStorage across page refreshes
+function getSessionId() {
+  let id = localStorage.getItem('weldai_session_id')
+  if (!id) {
+    id = 'sess_' + Math.random().toString(36).slice(2) + Date.now().toString(36)
+    localStorage.setItem('weldai_session_id', id)
+  }
+  return id
+}
+
+const SESSION_ID = getSessionId()
+
 const api = {
   get: (path) => fetch(path).then(r => r.json()),
   post: (path, body) => fetch(path, {
@@ -639,7 +651,17 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
     let answerBuf = ''
     let msgId = Date.now() + 1
 
-    const cancel = streamSSE('/api/ask', { question }, (ev) => {
+    // Build history from current messages for context (last 12 = 6 exchanges)
+    const historyForApi = messages.slice(-12).map(m => ({
+      role: m.role,
+      content: m.content,
+    }))
+
+    const cancel = streamSSE('/api/ask', {
+      question,
+      session_id: SESSION_ID,
+      history: historyForApi,
+    }, (ev) => {
       if (ev.type === 'status') {
         setMessages(m => m.map(msg => msg.id === msgId
           ? { ...msg, content: ev.data, status: true }
@@ -722,6 +744,13 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
         <>
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+            {messages.length > 0 && historyLoaded && messages[0]?.id !== undefined && (
+              <div className="flex justify-center py-2">
+                <span className="text-xs text-slate-300 bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
+                  ↑ Conversation history
+                </span>
+              </div>
+            )}
             {messages.length === 0 ? (
               <WelcomeScreen
                 status={status}
@@ -776,10 +805,14 @@ function ChatPanel({ status, cfg, accent, onSetup, setupState }) {
               {messages.length > 0 && (
                 <div className="flex gap-2 mt-1.5 px-1">
                   <button
-                    onClick={() => setMessages([])}
-                    className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+                    onClick={() => {
+                      setMessages([])
+                      setHistoryLoaded(false)
+                      api.del(`/api/history/${SESSION_ID}`)
+                    }}
+                    className="text-xs text-slate-400 hover:text-red-500 transition-colors"
                   >
-                    🗑️ Clear
+                    🗑️ New conversation
                   </button>
                 </div>
               )}

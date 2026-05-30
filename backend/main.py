@@ -42,6 +42,8 @@ rag = RAGSystem(_config)
 
 class AskRequest(BaseModel):
     question: str
+    session_id: str = "default"
+    history: list = []  # [{role, content}] last N turns
 
 class SetupRequest(BaseModel):
     mode: str = "init"   # "init" | "full" | "incremental"
@@ -159,11 +161,34 @@ def setup(req: SetupRequest):
 
 @app.post("/api/ask")
 def ask(req: AskRequest):
-    """SSE stream of answer tokens."""
+    """SSE stream of answer tokens. Saves Q&A to history."""
 
     def event_stream():
-        for event in rag.ask_stream(req.question):
+        # Save user message first
+        rag.save_message(req.session_id, "user", req.question)
+
+        answer_buf = ""
+        sources_buf = []
+        elapsed_buf = None
+        cached_buf = False
+
+        for event in rag.ask_stream(req.question, history=req.history):
             yield f"data: {json.dumps(event)}\n\n"
+            # Collect answer for saving
+            if event["type"] == "token":
+                answer_buf += event["data"]
+            elif event["type"] == "cached":
+                answer_buf = event["data"]
+                cached_buf = True
+            elif event["type"] == "sources":
+                sources_buf = event["data"]
+            elif event["type"] == "meta":
+                elapsed_buf = event["data"].get("elapsed")
+            elif event["type"] == "done" and answer_buf:
+                rag.save_message(
+                    req.session_id, "assistant", answer_buf,
+                    sources=sources_buf, elapsed=elapsed_buf, cached=cached_buf
+                )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream",
                               headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -173,6 +198,40 @@ def ask(req: AskRequest):
 def clear_cache():
     rag.clear_cache()
     return {"ok": True}
+
+
+# ── Chat history endpoints ────────────────────────────────────────────────────
+
+@app.get("/api/history/{session_id}")
+def get_history(session_id: str, limit: int = 50):
+    return {"messages": rag.get_history(session_id, limit=limit)}
+
+
+@app.delete("/api/history/{session_id}")
+def clear_history(session_id: str):
+    rag.clear_history(session_id)
+    return {"ok": True}
+
+
+@app.get("/api/sessions")
+def list_sessions():
+    return {"sessions": rag.list_sessions()}
+
+
+@app.on_event("startup")
+def startup():
+    """Ensure DB tables exist on startup."""
+    import time
+    # Wait briefly for DB to be ready
+    for _ in range(5):
+        try:
+            rag._init_pool()
+            rag.ensure_history_table()
+            logger.info("Chat history table ready")
+            break
+        except Exception as e:
+            logger.warning(f"DB not ready yet: {e}")
+            time.sleep(2)
 
 
 class SearchRequest(BaseModel):
