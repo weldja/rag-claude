@@ -427,9 +427,14 @@ class RAGSystem:
         except anthropic.AuthenticationError:
             raise ValueError("ANTHROPIC_API_KEY is invalid.")
         retrieve_k = self.cfg.retrieval_k
+        # MMR diversifies results — prevents all chunks coming from same document section
         self.retriever = self.vectorstore.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": retrieve_k},
+            search_type="mmr",
+            search_kwargs={
+                "k": retrieve_k,
+                "fetch_k": retrieve_k * 3,  # fetch more, then diversify
+                "lambda_mult": 0.7,          # 0=max diversity, 1=max relevance
+            },
         )
         self._initialized = True
 
