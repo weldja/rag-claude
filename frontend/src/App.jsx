@@ -11,6 +11,37 @@ function Markdown({ text }) {
   while (i < lines.length) {
     const line = lines[i]
     
+    // Markdown table — detect by | at start and separator row
+    if (/^\|/.test(line) && i + 1 < lines.length && /^\|[-| :]+\|/.test(lines[i + 1])) {
+      const headerCells = line.split('|').filter((_, idx, arr) => idx > 0 && idx < arr.length - 1).map(c => c.trim())
+      i += 2 // skip header and separator
+      const rows = []
+      while (i < lines.length && /^\|/.test(lines[i])) {
+        const cells = lines[i].split('|').filter((_, idx, arr) => idx > 0 && idx < arr.length - 1).map(c => c.trim())
+        rows.push(cells)
+        i++
+      }
+      elements.push(
+        <div key={i} className="overflow-x-auto my-2">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr>{headerCells.map((h, j) => (
+                <th key={j} className="text-left px-3 py-2 text-xs font-semibold text-white" style={{background:'#185FA5'}}>{renderInline(h)}</th>
+              ))}</tr>
+            </thead>
+            <tbody>{rows.map((row, ri) => (
+              <tr key={ri} className={ri % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                {row.map((cell, ci) => (
+                  <td key={ci} className="px-3 py-2 border-b border-slate-100 text-slate-700">{renderInline(cell)}</td>
+                ))}
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )
+      continue
+    }
+
     // Numbered list
     if (/^\d+\.\s/.test(line)) {
       const items = []
