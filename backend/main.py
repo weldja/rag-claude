@@ -328,7 +328,21 @@ def run_diagnostics():
     results["docs_folder"] = folder_results
 
     # 5. System info
+    # Get git commit hash if available
+    git_commit = "unknown"
+    try:
+        git_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd="/app"
+        )
+        if git_result.returncode == 0:
+            git_commit = git_result.stdout.strip()
+    except Exception:
+        pass
+
     results["system"] = {
+        "weldai_version": "2.1.0",
+        "git_commit": git_commit,
         "platform": platform.system(),
         "platform_version": platform.version()[:80],
         "python_version": sys.version.split()[0],
@@ -348,15 +362,56 @@ def run_diagnostics():
     except Exception:
         results["packages"] = {}
 
-    # 7. Recent errors from log (last 30 lines containing ERROR)
+    # 7. Docker container status
     try:
-        log_output = subprocess.run(
-            ["python3", "-c", "import logging; print('log ok')"],
-            capture_output=True, text=True, timeout=5
+        docker_ps = subprocess.run(
+            ["docker", "compose", "ps", "--format", "json"],
+            capture_output=True, text=True, timeout=10,
+            cwd="/app"
         )
-        results["log_check"] = "ok"
-    except Exception:
-        results["log_check"] = "unavailable"
+        if docker_ps.returncode == 0 and docker_ps.stdout.strip():
+            import json as _j
+            containers = []
+            for line in docker_ps.stdout.strip().split("\n"):
+                try:
+                    containers.append(_j.loads(line))
+                except Exception:
+                    pass
+            results["containers"] = containers
+        else:
+            # Fallback — just report what we know from inside the container
+            results["containers"] = {"note": "Running inside container — docker compose ps not available from within"}
+    except Exception as e:
+        results["containers"] = {"note": f"Could not get container status: {str(e)}"}
+
+    # 8. Capture backend logs (last 50 lines from uvicorn/app)
+    try:
+        import logging as _logging
+        # Get recent log records from Python logging
+        backend_logs = []
+        for handler in _logging.getLogger().handlers:
+            if hasattr(handler, 'baseFilename'):
+                try:
+                    with open(handler.baseFilename) as lf:
+                        backend_logs = lf.readlines()[-50:]
+                except Exception:
+                    pass
+        # Also try reading /proc/1/fd/1 (stdout of PID 1 in container)
+        if not backend_logs:
+            try:
+                result = subprocess.run(
+                    ["tail", "-n", "50", "/proc/1/fd/1"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.stdout:
+                    backend_logs = result.stdout.splitlines()
+            except Exception:
+                pass
+        results["backend_logs"] = backend_logs if backend_logs else ["Log capture not available in this environment"]
+    except Exception as e:
+        results["backend_logs"] = [f"Could not capture logs: {str(e)}"]
+
+    results["log_check"] = "ok"
 
     return results
 
@@ -413,18 +468,25 @@ def download_diagnostics():
             "session_queries": stats.get("session_queries"),
             "session_tokens": stats.get("session_tokens"),
             "session_cost_usd": stats.get("session_cost_usd"),
-        }
+        },
+        "containers": diag.get("containers"),
     }
+
+    # Collect backend logs as separate file
+    backend_logs = diag.get("backend_logs", [])
+    backend_log_text = "\n".join(backend_logs) if isinstance(backend_logs, list) else str(backend_logs)
 
     # Build zip in memory
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("diagnostics.json", _json.dumps(merged, indent=2, default=str))
+        zf.writestr("backend.log", backend_log_text)
         zf.writestr("readme.txt",
             "Weld AI Diagnostics Bundle\n"
             "Generated: " + str(__import__("datetime").datetime.now()) + "\n\n"
             "Contents:\n"
-            "  diagnostics.json  - Complete system diagnostics (no API key included)\n\n"
+            "  diagnostics.json  - Complete system diagnostics (no API key included)\n"
+            "  backend.log       - Recent backend application logs\n\n"
             "Please email this file to hello@weldai.uk for support.\n"
         )
     buf.seek(0)
