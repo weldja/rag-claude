@@ -328,17 +328,8 @@ def run_diagnostics():
     results["docs_folder"] = folder_results
 
     # 5. System info
-    # Get git commit hash if available
-    git_commit = "unknown"
-    try:
-        git_result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5, cwd="/app"
-        )
-        if git_result.returncode == 0:
-            git_commit = git_result.stdout.strip()
-    except Exception:
-        pass
+    # Get git commit from env var baked in at build time
+    git_commit = os.getenv("GIT_COMMIT", "unknown")
 
     results["system"] = {
         "weldai_version": "2.1.0",
@@ -362,54 +353,17 @@ def run_diagnostics():
     except Exception:
         results["packages"] = {}
 
-    # 7. Docker container status
+    # 7. Read backend log file
     try:
-        docker_ps = subprocess.run(
-            ["docker", "compose", "ps", "--format", "json"],
-            capture_output=True, text=True, timeout=10,
-            cwd="/app"
-        )
-        if docker_ps.returncode == 0 and docker_ps.stdout.strip():
-            import json as _j
-            containers = []
-            for line in docker_ps.stdout.strip().split("\n"):
-                try:
-                    containers.append(_j.loads(line))
-                except Exception:
-                    pass
-            results["containers"] = containers
+        log_path = "/app/weldai.log"
+        if os.path.exists(log_path):
+            with open(log_path) as lf:
+                backend_logs = lf.readlines()[-100:]
+            results["backend_logs"] = [l.rstrip() for l in backend_logs]
         else:
-            # Fallback — just report what we know from inside the container
-            results["containers"] = {"note": "Running inside container — docker compose ps not available from within"}
+            results["backend_logs"] = ["Log file not yet created — restart the backend to enable logging"]
     except Exception as e:
-        results["containers"] = {"note": f"Could not get container status: {str(e)}"}
-
-    # 8. Capture backend logs (last 50 lines from uvicorn/app)
-    try:
-        import logging as _logging
-        # Get recent log records from Python logging
-        backend_logs = []
-        for handler in _logging.getLogger().handlers:
-            if hasattr(handler, 'baseFilename'):
-                try:
-                    with open(handler.baseFilename) as lf:
-                        backend_logs = lf.readlines()[-50:]
-                except Exception:
-                    pass
-        # Also try reading /proc/1/fd/1 (stdout of PID 1 in container)
-        if not backend_logs:
-            try:
-                result = subprocess.run(
-                    ["tail", "-n", "50", "/proc/1/fd/1"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.stdout:
-                    backend_logs = result.stdout.splitlines()
-            except Exception:
-                pass
-        results["backend_logs"] = backend_logs if backend_logs else ["Log capture not available in this environment"]
-    except Exception as e:
-        results["backend_logs"] = [f"Could not capture logs: {str(e)}"]
+        results["backend_logs"] = [f"Could not read log file: {str(e)}"]
 
     results["log_check"] = "ok"
 
@@ -469,7 +423,6 @@ def download_diagnostics():
             "session_tokens": stats.get("session_tokens"),
             "session_cost_usd": stats.get("session_cost_usd"),
         },
-        "containers": diag.get("containers"),
     }
 
     # Collect backend logs as separate file

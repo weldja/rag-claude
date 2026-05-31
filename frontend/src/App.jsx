@@ -71,6 +71,20 @@ function Markdown({ text }) {
       continue
     }
     
+    // Headings
+    if (/^###\s/.test(line)) {
+      elements.push(<p key={i} className="text-sm font-bold text-slate-800 mt-2">{renderInline(line.replace(/^###\s/, ''))}</p>)
+      i++; continue
+    }
+    if (/^##\s/.test(line)) {
+      elements.push(<p key={i} className="text-base font-bold text-slate-800 mt-2">{renderInline(line.replace(/^##\s/, ''))}</p>)
+      i++; continue
+    }
+    if (/^#\s/.test(line)) {
+      elements.push(<p key={i} className="text-lg font-bold text-slate-900 mt-1">{renderInline(line.replace(/^#\s/, ''))}</p>)
+      i++; continue
+    }
+
     // Normal paragraph
     elements.push(<p key={i} className="text-sm leading-relaxed">{renderInline(line)}</p>)
     i++
