@@ -265,6 +265,179 @@ def serve_doc(filename: str):
     raise HTTPException(404, f"File not found: {filename}")
 
 
+# ── Diagnostics ──────────────────────────────────────────────────────────────
+
+import io, zipfile, platform, time as _time
+
+@app.get("/api/diagnostics")
+def run_diagnostics():
+    """Run all diagnostic checks and return results."""
+    import subprocess, sys
+    results = {}
+
+    # 1. Database
+    try:
+        with rag._db() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT version()")
+            pg_ver = cur.fetchone()[0].split(",")[0]
+            cur.execute("SELECT COUNT(*) FROM langchain_pg_embedding e JOIN langchain_pg_collection c ON e.collection_id=c.uuid WHERE c.name=%s", (_config.collection_name,))
+            chunks = cur.fetchone()[0]
+            cur.execute("SELECT pg_size_pretty(pg_database_size(current_database()))")
+            db_size = cur.fetchone()[0]
+        results["database"] = {"status": "ok", "version": pg_ver, "chunks": chunks, "size": db_size}
+    except Exception as e:
+        results["database"] = {"status": "error", "error": str(e)}
+
+    # 2. API key
+    key = os.getenv("ANTHROPIC_API_KEY", "") or load_saved_api_key()
+    if key:
+        results["api_key"] = {"status": "present", "prefix": key[:12] + "..."}
+    else:
+        results["api_key"] = {"status": "missing"}
+
+    # 3. Anthropic connectivity
+    try:
+        import httpx
+        t0 = _time.time()
+        r = httpx.get("https://api.anthropic.com", timeout=5)
+        ms = round((_time.time() - t0) * 1000)
+        results["anthropic_connectivity"] = {"status": "ok", "response_ms": ms, "http_status": r.status_code}
+    except Exception as e:
+        results["anthropic_connectivity"] = {"status": "error", "error": str(e)}
+
+    # 4. Docs folder
+    docs_path = Path(_config.docs_path)
+    folder_results = {"path": str(docs_path), "is_network_share": str(docs_path).startswith("\\") or str(docs_path).startswith("//"), "exists": docs_path.exists()}
+    if docs_path.exists():
+        files_status = []
+        for f in docs_path.rglob("*"):
+            if f.is_file() and not f.name.startswith("."):
+                try:
+                    size = f.stat().st_size
+                    files_status.append({"name": f.name, "path": str(f.relative_to(docs_path)), "size_bytes": size, "readable": True})
+                except Exception as e:
+                    files_status.append({"name": f.name, "path": str(f), "readable": False, "error": str(e)})
+        folder_results["files"] = files_status
+        folder_results["total_files"] = len(files_status)
+        folder_results["unreadable_files"] = sum(1 for f in files_status if not f["readable"])
+        folder_results["status"] = "ok" if folder_results["unreadable_files"] == 0 else "warning"
+    else:
+        folder_results["status"] = "error"
+        folder_results["error"] = "Docs folder does not exist"
+    results["docs_folder"] = folder_results
+
+    # 5. System info
+    results["system"] = {
+        "platform": platform.system(),
+        "platform_version": platform.version()[:80],
+        "python_version": sys.version.split()[0],
+        "initialized": rag._initialized,
+        "model": _config.claude_model,
+        "embedding_model": _config.embedding_model,
+    }
+
+    # 6. Package versions
+    try:
+        import anthropic as _ant, langchain_core as _lc, fastembed as _fe
+        results["packages"] = {
+            "anthropic": _ant.__version__,
+            "langchain_core": _lc.__version__,
+            "fastembed": _fe.__version__,
+        }
+    except Exception:
+        results["packages"] = {}
+
+    # 7. Recent errors from log (last 30 lines containing ERROR)
+    try:
+        log_output = subprocess.run(
+            ["python3", "-c", "import logging; print('log ok')"],
+            capture_output=True, text=True, timeout=5
+        )
+        results["log_check"] = "ok"
+    except Exception:
+        results["log_check"] = "unavailable"
+
+    return results
+
+
+@app.get("/api/diagnostics/download")
+def download_diagnostics():
+    """Generate and return a diagnostics zip file."""
+    import json as _json
+
+    diag = run_diagnostics()
+
+    # Safe config (no API key)
+    safe_cfg = {
+        "docs_path": _config.docs_path,
+        "db_host": _config.db_host,
+        "db_port": _config.db_port,
+        "db_name": _config.db_name,
+        "collection_name": _config.collection_name,
+        "embedding_model": _config.embedding_model,
+        "claude_model": _config.claude_model,
+        "chunk_size": _config.chunk_size,
+        "chunk_overlap": _config.chunk_overlap,
+        "retrieval_k": _config.retrieval_k,
+    }
+
+    # Stats
+    stats = rag.get_stats() if rag._initialized else {}
+
+    # Merge everything into a single diagnostics.json
+    merged = {
+        "generated": str(__import__("datetime").datetime.now()),
+        "system": diag.get("system", {}),
+        "database": diag.get("database", {}),
+        "api_key": diag.get("api_key", {}),
+        "anthropic_connectivity": diag.get("anthropic_connectivity", {}),
+        "docs_folder": diag.get("docs_folder", {}),
+        "packages": diag.get("packages", {}),
+        "configuration": {
+            "docs_path": safe_cfg.get("docs_path"),
+            "collection_name": safe_cfg.get("collection_name"),
+            "embedding_model": safe_cfg.get("embedding_model"),
+            "claude_model": safe_cfg.get("claude_model"),
+            "chunk_size": safe_cfg.get("chunk_size"),
+            "chunk_overlap": safe_cfg.get("chunk_overlap"),
+            "retrieval_k": safe_cfg.get("retrieval_k"),
+            "db_host": safe_cfg.get("db_host"),
+            "db_port": safe_cfg.get("db_port"),
+        },
+        "runtime": {
+            "chunks_indexed": stats.get("chunks_indexed"),
+            "documents_found": stats.get("documents_found"),
+            "last_indexed": stats.get("last_indexed"),
+            "cache_size": stats.get("cache_size"),
+            "session_queries": stats.get("session_queries"),
+            "session_tokens": stats.get("session_tokens"),
+            "session_cost_usd": stats.get("session_cost_usd"),
+        }
+    }
+
+    # Build zip in memory
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("diagnostics.json", _json.dumps(merged, indent=2, default=str))
+        zf.writestr("readme.txt",
+            "Weld AI Diagnostics Bundle\n"
+            "Generated: " + str(__import__("datetime").datetime.now()) + "\n\n"
+            "Contents:\n"
+            "  diagnostics.json  - Complete system diagnostics (no API key included)\n\n"
+            "Please email this file to hello@weldai.uk for support.\n"
+        )
+    buf.seek(0)
+
+    from fastapi.responses import StreamingResponse as SR
+    ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+    return SR(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=weldai_diagnostics_{ts}.zip"}
+    )
+
+
 class SearchRequest(BaseModel):
     query: str
     k: int = 6

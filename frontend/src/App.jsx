@@ -1000,8 +1000,94 @@ function SearchPanel({ accent }) {
 // About panel
 // ─────────────────────────────────────────────
 
+function DiagnosticRow({ label, status, detail }) {
+  const icon = status === 'ok' ? '✅' : status === 'warning' ? '⚠️' : status === 'error' ? '❌' : '⏳'
+  return (
+    <div className="flex items-start gap-3 py-2 border-b border-slate-100 last:border-0">
+      <span className="text-sm flex-shrink-0">{icon}</span>
+      <div className="flex-1 min-w-0">
+        <span className="text-sm font-medium text-slate-700">{label}</span>
+        {detail && <p className="text-xs text-slate-500 mt-0.5 truncate">{detail}</p>}
+      </div>
+    </div>
+  )
+}
+
 function AboutPanel({ status, cfg }) {
   const stats = status?.stats
+  const [diagState, setDiagState] = useState(null) // null | 'running' | results
+  const [diagError, setDiagError] = useState(null)
+
+  const runDiagnostics = async () => {
+    setDiagState('running')
+    setDiagError(null)
+    try {
+      const res = await api.get('/api/diagnostics')
+      setDiagState(res)
+    } catch (e) {
+      setDiagError('Failed to run diagnostics')
+      setDiagState(null)
+    }
+  }
+
+  const downloadDiagnostics = () => {
+    window.open('/api/diagnostics/download', '_blank')
+  }
+
+  const getDiagRows = (d) => {
+    if (!d) return []
+    const rows = []
+    // Database
+    if (d.database?.status === 'ok')
+      rows.push({ label: 'Database connected', status: 'ok', detail: `${d.database.version} · ${d.database.size} · ${d.database.chunks?.toLocaleString()} chunks` })
+    else
+      rows.push({ label: 'Database', status: 'error', detail: d.database?.error })
+
+    // API key
+    rows.push({ label: 'API key', status: d.api_key?.status === 'present' ? 'ok' : 'error',
+      detail: d.api_key?.status === 'present' ? d.api_key.prefix : 'No API key found' })
+
+    // Anthropic connectivity
+    if (d.anthropic_connectivity?.status === 'ok')
+      rows.push({ label: 'Anthropic API reachable', status: 'ok', detail: `${d.anthropic_connectivity.response_ms}ms response time` })
+    else
+      rows.push({ label: 'Anthropic API', status: 'error', detail: d.anthropic_connectivity?.error })
+
+    // Docs folder
+    const df = d.docs_folder
+    if (df?.exists) {
+      const shareType = df.is_network_share ? '🌐 Network share' : '💾 Local folder'
+      if (df.status === 'ok')
+        rows.push({ label: 'Docs folder accessible', status: 'ok',
+          detail: `${shareType} · ${df.total_files} files · ${df.path}` })
+      else if (df.status === 'warning')
+        rows.push({ label: `Docs folder — ${df.unreadable_files} file(s) unreadable`, status: 'warning',
+          detail: `${shareType} · ${df.path}` })
+      if (df.is_network_share)
+        rows.push({ label: 'Network share detected', status: 'ok',
+          detail: `Path: ${df.path}` })
+      if (df?.files) {
+        df.files.filter(f => !f.readable).forEach(f => {
+          rows.push({ label: `Permission denied: ${f.name}`, status: 'error',
+            detail: `Path: ${f.path} · ${f.error}` })
+        })
+        const readable = df.files.filter(f => f.readable).length
+        const unreadable = df.files.filter(f => !f.readable).length
+        if (unreadable === 0)
+          rows.push({ label: `All ${readable} file(s) readable`, status: 'ok',
+            detail: df.files.map(f => `${f.name} (${(f.size_bytes/1024).toFixed(0)}KB)`).join(', ') })
+      }
+    } else {
+      rows.push({ label: 'Docs folder not found', status: 'error', detail: df?.error || df?.path })
+    }
+
+    // System
+    rows.push({ label: 'System', status: 'ok',
+      detail: `${d.system?.platform} · Python ${d.system?.python_version} · ${d.system?.model}` })
+
+    return rows
+  }
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <h3 className="font-semibold text-slate-800 mb-4">
@@ -1043,9 +1129,68 @@ function AboutPanel({ status, cfg }) {
           </dl>
         </div>
       </div>
-      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+
+      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6">
         <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Supported Formats</h4>
         <p className="text-sm text-slate-600">PDF · Word (.docx .doc) · PowerPoint (.pptx .ppt) · Excel (.xlsx .xls) · CSV · Plain text · RTF</p>
+      </div>
+
+      {/* Diagnostics section */}
+      <div className="bg-white border border-slate-200 rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">🔧 Diagnostics</h4>
+          {diagState && diagState !== 'running' && (
+            <button
+              onClick={downloadDiagnostics}
+              className="text-xs px-3 py-1.5 rounded-lg text-white font-medium flex items-center gap-1.5"
+              style={{ background: '#185FA5' }}
+            >
+              ⬇ Download diagnostics.zip
+            </button>
+          )}
+        </div>
+
+        {!diagState && (
+          <div className="text-center py-4">
+            <p className="text-sm text-slate-500 mb-3">Run a system check to verify everything is working correctly.</p>
+            <button
+              onClick={runDiagnostics}
+              className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              ▶ Run diagnostics
+            </button>
+          </div>
+        )}
+
+        {diagState === 'running' && (
+          <div className="flex items-center gap-2 py-3 text-sm text-slate-500">
+            <span className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+            Running checks...
+          </div>
+        )}
+
+        {diagError && (
+          <p className="text-sm text-red-600 py-2">{diagError}</p>
+        )}
+
+        {diagState && diagState !== 'running' && (
+          <div className="divide-y divide-slate-100">
+            {getDiagRows(diagState).map((row, i) => (
+              <DiagnosticRow key={i} {...row} />
+            ))}
+            <div className="pt-3 mt-1">
+              <button
+                onClick={runDiagnostics}
+                className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                ↺ Run again
+              </button>
+              <p className="text-xs text-slate-400 mt-1">
+                Email diagnostics.zip to <a href="mailto:hello@weldai.uk" className="text-blue-500">hello@weldai.uk</a> for support.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
